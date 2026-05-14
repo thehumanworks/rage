@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Run deterministic QA
+        run: scripts/qa.sh
+      - name: Run local smoke
+        run: scripts/smoke-local.sh
+      - name: Audit harness
+        run: scripts/harness-audit.sh
