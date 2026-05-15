@@ -5,16 +5,23 @@
 #   curl -fsSL https://raw.githubusercontent.com/thehumanworks/rage/main/install.sh | sh
 #
 # Environment overrides:
-#   RAGE_REPO      owner/repo to install from   (default: thehumanworks/rage)
-#   VERSION        release tag to install       (default: latest)
-#   PREFIX         install prefix override      (default: /usr/local or $HOME/.local)
-#   INSTALL_DIR    explicit install bin dir     (default: $PREFIX/bin)
-#   RAGE_NO_SUDO   if set to 1, never use sudo  (default: unset)
+#   RAGE_REPO          owner/repo to install from        (default: thehumanworks/rage)
+#   VERSION            release tag to install            (default: latest)
+#   PREFIX             install prefix override           (default: /usr/local or $HOME/.local)
+#   INSTALL_DIR        explicit install bin dir          (default: $PREFIX/bin)
+#   RAGE_NO_SUDO       if 1, never use sudo              (default: unset)
+#   GITHUB_TOKEN       auth token for private repos      (default: unset)
+#   RAGE_GITHUB_TOKEN  alias for GITHUB_TOKEN
+#
+# If RAGE_REPO is a private GitHub repo, GITHUB_TOKEN must be set to a PAT or
+# fine-grained token with `contents:read` on the repo. The script will then
+# fetch release metadata and asset bytes through the authenticated API so the
+# private repo's binaries can be installed.
 #
 # The script:
 #   1. detects host OS and CPU via uname,
 #   2. resolves the matching release asset name,
-#   3. downloads the archive + SHA256SUMS from the GitHub release,
+#   3. downloads the archive + SHA256SUMS via the GitHub Releases API,
 #   4. verifies the archive checksum,
 #   5. installs the `rage` binary to a system-wide location when possible,
 #      otherwise to $HOME/.local/bin (and reminds you to PATH it).
@@ -31,6 +38,13 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"
 }
 
+# ----- Auth ------------------------------------------------------------------
+TOKEN="${RAGE_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
+if [ -z "$TOKEN" ] && command -v gh >/dev/null 2>&1; then
+  # Fall back to the gh CLI's stored token if available (silent if not signed in).
+  TOKEN="$(gh auth token 2>/dev/null || true)"
+fi
+
 # ----- Fetch helpers (curl preferred, wget fallback) -------------------------
 have_curl=0
 have_wget=0
@@ -40,22 +54,40 @@ if [ "$have_curl" -eq 0 ] && [ "$have_wget" -eq 0 ]; then
   die "neither curl nor wget is installed; install one and retry"
 fi
 
-http_get() {
-  # http_get URL OUT
-  url="$1"; out="$2"
+# api_get URL → stdout (JSON). Sends Authorization if TOKEN is set, Accept JSON.
+api_get() {
+  url="$1"
   if [ "$have_curl" -eq 1 ]; then
-    curl -fsSL "$url" -o "$out"
+    if [ -n "$TOKEN" ]; then
+      curl -fsSL -H "Authorization: Bearer $TOKEN" -H 'Accept: application/vnd.github+json' "$url"
+    else
+      curl -fsSL -H 'Accept: application/vnd.github+json' "$url"
+    fi
   else
-    wget -qO "$out" "$url"
+    if [ -n "$TOKEN" ]; then
+      wget -qO- --header="Authorization: Bearer $TOKEN" --header='Accept: application/vnd.github+json' "$url"
+    else
+      wget -qO- --header='Accept: application/vnd.github+json' "$url"
+    fi
   fi
 }
 
-http_get_stdout() {
-  url="$1"
+# asset_get URL OUT → file. Uses Accept: octet-stream so the API returns the
+# binary, not a JSON descriptor.
+asset_get() {
+  url="$1"; out="$2"
   if [ "$have_curl" -eq 1 ]; then
-    curl -fsSL "$url"
+    if [ -n "$TOKEN" ]; then
+      curl -fsSL -H "Authorization: Bearer $TOKEN" -H 'Accept: application/octet-stream' "$url" -o "$out"
+    else
+      curl -fsSL -H 'Accept: application/octet-stream' "$url" -o "$out"
+    fi
   else
-    wget -qO- "$url"
+    if [ -n "$TOKEN" ]; then
+      wget -qO "$out" --header="Authorization: Bearer $TOKEN" --header='Accept: application/octet-stream' "$url"
+    else
+      wget -qO "$out" --header='Accept: application/octet-stream' "$url"
+    fi
   fi
 }
 
@@ -94,25 +126,6 @@ detect_target() {
   esac
 }
 
-# ----- Resolve version -------------------------------------------------------
-resolve_version() {
-  if [ "$VERSION" = "latest" ]; then
-    api="https://api.github.com/repos/$RAGE_REPO/releases/latest"
-    if [ "$have_curl" -eq 1 ]; then
-      raw="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api" || true)"
-    else
-      raw="$(wget -qO- --header='Accept: application/vnd.github+json' "$api" || true)"
-    fi
-    [ -n "$raw" ] || die "could not query latest release from $api"
-    # Extract tag_name without jq.
-    tag="$(printf '%s' "$raw" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
-    [ -n "$tag" ] || die "could not parse tag_name from GitHub API response"
-    printf '%s\n' "$tag"
-  else
-    printf '%s\n' "$VERSION"
-  fi
-}
-
 # ----- Choose install dir ----------------------------------------------------
 choose_install_dir() {
   if [ -n "${INSTALL_DIR:-}" ]; then
@@ -123,7 +136,6 @@ choose_install_dir() {
     printf '%s/bin\n' "$PREFIX"
     return
   fi
-  # Prefer /usr/local/bin if writable or if sudo is available.
   if [ -w /usr/local/bin ]; then
     printf '/usr/local/bin\n'
   elif [ "${RAGE_NO_SUDO:-0}" != "1" ] && command -v sudo >/dev/null 2>&1; then
@@ -161,27 +173,72 @@ need tar
 need mkdir
 
 target="$(detect_target)"
-tag="$(resolve_version)"
-version="${tag#v}"
 
+# Resolve release metadata (one API call gets the tag and all asset URLs).
+if [ "$VERSION" = "latest" ]; then
+  release_api="https://api.github.com/repos/$RAGE_REPO/releases/latest"
+else
+  release_api="https://api.github.com/repos/$RAGE_REPO/releases/tags/$VERSION"
+fi
+
+release_json="$(api_get "$release_api" 2>&1)" || {
+  msg="$release_json"
+  case "$msg" in
+    *404*|*"Not Found"*)
+      die "release lookup returned 404 for $release_api. If $RAGE_REPO is a private repo, export GITHUB_TOKEN (a fine-grained PAT with contents:read on the repo) and re-run."
+      ;;
+    *)
+      die "release lookup failed: $msg"
+      ;;
+  esac
+}
+
+# Bootstrap: pull the tag from the JSON so we can derive the archive name.
+tag="$(printf '%s' "$release_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+[ -n "$tag" ] || die "could not parse tag_name from release JSON"
+version="${tag#v}"
 archive_name="rage-${version}-${target}.tar.gz"
 sums_name="SHA256SUMS"
-base_url="https://github.com/$RAGE_REPO/releases/download/$tag"
-archive_url="$base_url/$archive_name"
-sums_url="$base_url/$sums_name"
+
+# Resolve asset API URLs from the JSON. Python3 is used because robust JSON
+# parsing in pure sh is too fragile against GitHub's response shape.
+tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t rage-install)"
+trap 'rm -rf "$tmpdir"' EXIT INT TERM HUP
+printf '%s' "$release_json" > "$tmpdir/release.json"
+
+if command -v python3 >/dev/null 2>&1; then
+  python_bin=python3
+elif command -v python >/dev/null 2>&1; then
+  python_bin=python
+else
+  die "python (2.7 or 3.x) is required to parse the GitHub release JSON"
+fi
+
+parsed="$("$python_bin" -c '
+import json, sys
+data = json.load(open(sys.argv[1]))
+want = {"archive": sys.argv[2], "sums": sys.argv[3]}
+assets = {a["name"]: a["url"] for a in data.get("assets", [])}
+print(assets.get(want["archive"], ""))
+print(assets.get(want["sums"], ""))
+' "$tmpdir/release.json" "$archive_name" "$sums_name")"
+
+archive_url="$(printf '%s\n' "$parsed" | sed -n '1p')"
+sums_url="$(printf '%s\n' "$parsed" | sed -n '2p')"
+
+[ -n "$archive_url" ] || die "archive $archive_name not found in release $tag assets"
+[ -n "$sums_url" ] || die "$sums_name not found in release $tag assets"
 
 log "target:   $target"
 log "tag:      $tag"
-log "archive:  $archive_url"
-
-tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t rage-install)"
-trap 'rm -rf "$tmpdir"' EXIT INT TERM HUP
+log "archive:  $archive_name"
+log "auth:     $([ -n "$TOKEN" ] && echo 'yes (token present)' || echo 'no (anonymous)')"
 
 archive_path="$tmpdir/$archive_name"
 sums_path="$tmpdir/$sums_name"
 
-http_get "$archive_url" "$archive_path" || die "download failed: $archive_url"
-http_get "$sums_url" "$sums_path" || die "download failed: $sums_url (expected SHA256SUMS in release)"
+asset_get "$archive_url" "$archive_path" || die "download failed: $archive_url"
+asset_get "$sums_url" "$sums_path" || die "download failed: $sums_url"
 
 # ----- Verify checksum -------------------------------------------------------
 expected="$(awk -v f="$archive_name" '$2 == f || $2 == "*" f { print $1 }' "$sums_path" | head -n1)"

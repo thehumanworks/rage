@@ -18,9 +18,23 @@ Prebuilt binaries are published on every tag push under
 [GitHub Releases](https://github.com/thehumanworks/rage/releases). The supported
 host matrix is macOS aarch64, Linux x86_64, Linux aarch64, and Windows x86_64.
 
+While `thehumanworks/rage` is a private repository, the installer needs a
+GitHub token with `contents:read` scope on the repo (a fine-grained PAT or any
+PAT with `repo` scope works). The script also falls back to `gh auth token` if
+the `gh` CLI is already signed in.
+
 For Unix-like systems, the bundled installer detects your platform, downloads
-the matching archive, verifies its SHA-256 checksum, and drops the `rage`
-binary into a system-wide location:
+the matching archive via the authenticated GitHub Releases API, verifies its
+SHA-256 checksum, and drops the `rage` binary into a system-wide location:
+
+```sh
+export GITHUB_TOKEN=ghp_xxx   # or: gh auth login --scopes 'repo'
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/thehumanworks/rage/main/install.sh | sh
+```
+
+Once the repo is made public, the token is no longer required and the
+one-liner becomes:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/thehumanworks/rage/main/install.sh | sh
