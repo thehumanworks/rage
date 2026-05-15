@@ -1,8 +1,19 @@
 # Testing
 
-## Default Gate
+## Definition-Of-Done Gate
 
-Run this before claiming normal code changes are done:
+Run this before claiming code, script, or harness changes are done:
+
+```sh
+scripts/verify.sh
+```
+
+It runs `scripts/qa.sh`, `scripts/smoke-local.sh`, and
+`scripts/harness-audit.sh`. It runs live GCP only when `RAGE_LIVE_GCP=1` is set.
+
+## QA Gate
+
+Run this for the deterministic Rust quality gate:
 
 ```sh
 scripts/qa.sh
@@ -11,10 +22,11 @@ scripts/qa.sh
 It runs:
 
 - `cargo fmt --check`
-- `cargo clippy --all-targets -- -D warnings`
-- `cargo test`
-- `cargo build --release`
-- release binary help smoke
+- `cargo clippy --locked --all-targets -- -D warnings`
+- `cargo test --locked --bins`
+- `cargo test --locked --tests`
+- `cargo build --locked --release`
+- release binary help smoke for the root command and every subcommand
 
 ## Local End-to-End Smoke
 
@@ -58,6 +70,14 @@ scripts/harness-audit.sh
 ```
 
 This checks that the AI-facing docs, scripts, project skill, and safety phrases exist and that `.env` is not tracked.
+
+## Change Surface Matrix
+
+See `docs/DEFINITION_OF_DONE.md` for the required evidence by change type.
+
+Integration tests under `tests/` are part of the default QA gate. Do not move
+integration-impacting coverage behind a manual flag unless it requires live
+external infrastructure; use fake services for deterministic coverage.
 
 ## Test Coverage Map
 

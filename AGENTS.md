@@ -28,6 +28,7 @@ Before changing behavior, read:
 - `README.md`
 - `docs/ARCHITECTURE.md`
 - `docs/TESTING.md`
+- `docs/DEFINITION_OF_DONE.md`
 - Relevant command implementation in `src/main.rs`
 - Relevant integration tests in `tests/cli.rs`
 
@@ -48,7 +49,16 @@ For AI-harness work, also read:
 
 ## Verification Contract
 
-For normal code changes, run:
+For the default local definition of done, run:
+
+```sh
+scripts/verify.sh
+```
+
+For faster inner loops while iterating, use the narrow checks in
+`docs/DEFINITION_OF_DONE.md`, then finish with `scripts/verify.sh`.
+
+For normal code changes, the minimum component checks are:
 
 ```sh
 scripts/qa.sh
@@ -79,5 +89,7 @@ Before claiming completion, report exactly which scripts/checks ran and which ex
 - `scripts/smoke-local.sh`: local end-to-end smoke using temporary age identity/cache.
 - `scripts/smoke-gcp.sh`: disposable live GCP smoke with cleanup.
 - `scripts/harness-audit.sh`: validates the AI harness files and safety assumptions.
+- `scripts/verify.sh`: deterministic local definition-of-done gate.
 - `docs/`: architecture, testing, and agent-oriented context.
+- `contract.md`: feature-level verification contract for the current TUI work.
 - `.codex/skills/rage-secrets/`: project-local skill for future agents.

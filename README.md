@@ -12,6 +12,28 @@ GCP Secret Manager -> rage sync -> age-encrypted local cache -> rage shell/exec/
 GCP is the source of truth. Local shells and commands load from the encrypted
 cache, so they do not pay a network round trip on every shell init.
 
+## Install
+
+Prebuilt binaries are published on every tag push under
+[GitHub Releases](https://github.com/thehumanworks/rage/releases). The supported
+host matrix is macOS aarch64, Linux x86_64, Linux aarch64, and Windows x86_64.
+
+For Unix-like systems, the bundled installer detects your platform, downloads
+the matching archive, verifies its SHA-256 checksum, and drops the `rage`
+binary into a system-wide location:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/thehumanworks/rage/main/install.sh | sh
+```
+
+Useful environment overrides: `VERSION=v0.1.0` pins a specific release,
+`INSTALL_DIR=$HOME/.local/bin` selects a writable install dir, and
+`RAGE_NO_SUDO=1` keeps the script entirely within `$HOME` when run on a
+locked-down machine.
+
+For Windows, download `rage-<version>-x86_64-pc-windows-msvc.zip` from the
+Releases page and add the extracted directory to `PATH`.
+
 ## Requirements
 
 - A GCP project with Secret Manager enabled.
@@ -110,6 +132,19 @@ The default export output also installs a small shell wrapper so a later
 cache, and removes `OPENAI_API_KEY` from the current shell. If you only want
 plain export statements, pass `--no-shell-hook`.
 
+Open the interactive terminal UI:
+
+```sh
+rage tui
+```
+
+The TUI is a thin presentation layer over the same commands documented above.
+It lists remote bundles, shows the keys in the selected bundle with values
+masked by default (toggle with `m`), and supports `a`dd, `e`dit, `d`elete
+operations that go through the existing GCP write and cache paths. It honors
+the same SSH/Keychain guard as the other commands and refuses to open when
+stdout is not a terminal.
+
 Forward selected cached secrets over SSH:
 
 ```sh
@@ -152,6 +187,12 @@ the configured prefix, so slashes and nested namespaces are safe.
 Default quality gate:
 
 ```sh
+scripts/verify.sh
+```
+
+Narrow Rust-only gate:
+
+```sh
 scripts/qa.sh
 ```
 
@@ -173,5 +214,6 @@ AI harness audit:
 scripts/harness-audit.sh
 ```
 
-Read `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/TESTING.md`, and
-`docs/AI_HARNESS.md` before making behavioral changes.
+Read `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/TESTING.md`,
+`docs/DEFINITION_OF_DONE.md`, and `docs/AI_HARNESS.md` before making
+behavioral changes.

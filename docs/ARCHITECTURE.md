@@ -14,6 +14,7 @@ GCP Secret Manager -> sync/write commands -> age-encrypted local cache -> shell/
 - **Identity source**: File identities by default; `rage init` can generate the file identity and derive its public recipient natively. macOS Keychain is explicit opt-in.
 - **Command runner**: `exec` and `shell` inject decrypted variables into child process environments.
 - **SSH runner**: `ssh` sends a remote shell script over stdin so secrets are not embedded in local process arguments.
+- **TUI**: `rage tui` (module `src/tui.rs`) is a ratatui presentation layer that reuses the GCP and cache helpers above. It validates the age identity before opening the alternate screen so the SSH-Keychain guard fires before any terminal state is touched, refuses to start when stdout is not a TTY, and never renders raw values in the masked detail view.
 
 ## Safety Invariants
 

@@ -32,7 +32,10 @@ impl TestHome {
     fn rage(&self) -> assert_cmd::Command {
         let mut cmd = assert_cmd::Command::cargo_bin("rage").expect("rage binary");
         cmd.env("RAGE_CONFIG_DIR", &self.config_dir)
-            .env("RAGE_CACHE_DIR", &self.cache_dir);
+            .env("RAGE_CACHE_DIR", &self.cache_dir)
+            .env_remove("RAGE_GCP_ACCESS_TOKEN")
+            .env_remove("RAGE_GCP_SERVICE_ACCOUNT_JSON")
+            .env_remove("RAGE_GCP_SECRET_MANAGER_ENDPOINT");
         cmd
     }
 }
@@ -111,6 +114,37 @@ fn keychain_identity_is_blocked_over_ssh_without_explicit_flag() {
         .assert()
         .success()
         .stdout("export A='one'\n");
+}
+
+#[test]
+fn tui_refuses_keychain_identity_over_ssh() {
+    let home = TestHome::new();
+    let identity_path = init_file_identity(&home);
+    let recipient = config_value(&home, "age_recipient");
+    init_keychain_identity(&home, &recipient);
+    let fake = fake_security_bin(&identity_path);
+
+    home.rage()
+        .env("PATH", prepend_path(&fake.bin_dir))
+        .env("SSH_CONNECTION", "127.0.0.1 1 127.0.0.1 2")
+        .arg("tui")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "refusing to read macOS Keychain identity from an SSH session",
+        ));
+}
+
+#[test]
+fn tui_refuses_to_open_when_stdout_is_not_a_tty() {
+    let home = TestHome::new();
+    init_file_identity(&home);
+
+    home.rage()
+        .arg("tui")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("`rage tui` requires a terminal"));
 }
 
 #[test]

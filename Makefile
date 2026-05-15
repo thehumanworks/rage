@@ -1,4 +1,4 @@
-.PHONY: qa smoke-local smoke-gcp harness-audit
+.PHONY: qa smoke-local smoke-gcp harness-audit verify
 
 qa:
 	scripts/qa.sh
@@ -11,3 +11,6 @@ smoke-gcp:
 
 harness-audit:
 	scripts/harness-audit.sh
+
+verify:
+	scripts/verify.sh

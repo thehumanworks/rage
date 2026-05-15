@@ -22,6 +22,7 @@ trap cleanup EXIT INT TERM
 
 export RAGE_CONFIG_DIR="$tmp/config"
 export RAGE_CACHE_DIR="$tmp/cache"
+unset RAGE_GCP_ACCESS_TOKEN RAGE_GCP_SERVICE_ACCOUNT_JSON RAGE_GCP_SECRET_MANAGER_ENDPOINT
 mkdir -p "$RAGE_CONFIG_DIR" "$RAGE_CACHE_DIR"
 
 ./target/release/rage init \

@@ -15,7 +15,9 @@ Use this checklist before finalizing changes.
 
 ## Tests
 
+- `scripts/verify.sh` passed before finalizing code, script, or harness work.
 - `scripts/qa.sh` passed for code changes.
+- Integration-impacting changes are covered under `tests/` and run by the default QA gate.
 - `scripts/smoke-local.sh` passed for local runtime changes.
 - `scripts/smoke-gcp.sh` passed for live GCP claims, or the final answer says it was skipped.
 - `scripts/harness-audit.sh` passed for harness/docs/script changes.

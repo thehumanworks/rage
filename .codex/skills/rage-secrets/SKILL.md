@@ -15,6 +15,7 @@ Read these before editing behavior:
 - `README.md`
 - `docs/ARCHITECTURE.md`
 - `docs/TESTING.md`
+- `docs/DEFINITION_OF_DONE.md`
 - `tests/cli.rs` for black-box contracts
 
 For a compact completion checklist, read `references/checklist.md`.
@@ -35,8 +36,9 @@ For a compact completion checklist, read `references/checklist.md`.
 
 Run the narrowest sufficient set, but do not skip the required gate for changed surfaces:
 
-- Normal code: `scripts/qa.sh` and `scripts/smoke-local.sh`
-- GCP command behavior: add `scripts/smoke-gcp.sh`
+- Default completion gate: `scripts/verify.sh`
+- Normal code inner loop: `scripts/qa.sh` and `scripts/smoke-local.sh`
+- GCP command behavior: add `scripts/smoke-gcp.sh` or `RAGE_LIVE_GCP=1 scripts/verify.sh`
 - Harness/docs/scripts: `scripts/harness-audit.sh`
 
 Report what ran and what was skipped.

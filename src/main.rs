@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod tui;
+
 use age::secrecy::ExposeSecret;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{
@@ -64,6 +66,15 @@ enum Commands {
     Shell(ShellArgs),
     /// Open an SSH session or run a remote command with selected cached bundles.
     Ssh(SshArgs),
+    /// Open the interactive terminal UI for browsing and editing bundles.
+    Tui(TuiArgs),
+}
+
+#[derive(Args)]
+struct TuiArgs {
+    /// Permit reading an age identity from macOS Keychain in an SSH session.
+    #[arg(long)]
+    allow_ssh_keychain: bool,
 }
 
 #[derive(Args)]
@@ -385,6 +396,10 @@ fn main() -> Result<()> {
             let cfg = Config::load()?;
             let env = load_env(&cfg, &args.bundles, args.sync, args.allow_ssh_keychain)?;
             run_ssh(args.host, env, args.command)
+        }
+        Commands::Tui(args) => {
+            let cfg = Config::load()?;
+            tui::run(&cfg, args.allow_ssh_keychain)
         }
     }
 }

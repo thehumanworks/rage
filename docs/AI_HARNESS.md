@@ -6,10 +6,11 @@ This repository is prepared for agentic maintenance by making the safe path expl
 
 1. Read `AGENTS.md`.
 2. Read `README.md`.
-3. Read `docs/ARCHITECTURE.md` and `docs/TESTING.md`.
+3. Read `docs/ARCHITECTURE.md`, `docs/TESTING.md`, and `docs/DEFINITION_OF_DONE.md`.
 4. For workflow reminders, read `.codex/skills/rage-secrets/SKILL.md`.
-5. Make scoped changes.
-6. Run the verification script that matches the change.
+5. Read any feature contract that applies, such as `contract.md` for TUI work.
+6. Make scoped changes.
+7. Run the verification script that matches the change, finishing with `scripts/verify.sh` for code or harness work.
 
 ## Common Agent Failure Modes This Harness Prevents
 
@@ -20,29 +21,27 @@ This repository is prepared for agentic maintenance by making the safe path expl
 - Changing command output without updating black-box tests.
 - Claiming GCP behavior is verified from fake tests only.
 - Forgetting to run Clippy or release build.
+- Stopping after narrow tests without the local definition-of-done gate.
 
 ## Preferred Workflows
 
 For code changes:
 
 ```sh
-scripts/qa.sh
-scripts/smoke-local.sh
+scripts/verify.sh
 ```
 
 For GCP transport changes:
 
 ```sh
-scripts/qa.sh
-scripts/smoke-local.sh
-scripts/smoke-gcp.sh
+scripts/verify.sh
+RAGE_LIVE_GCP=1 scripts/verify.sh
 ```
 
 For docs/harness changes:
 
 ```sh
-scripts/harness-audit.sh
-scripts/qa.sh
+scripts/verify.sh
 ```
 
 ## Evidence Standard
