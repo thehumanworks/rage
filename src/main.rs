@@ -716,6 +716,15 @@ pub(crate) fn remote_read_bundle(
 ) -> Result<Option<BTreeMap<String, String>>> {
     let client = InfisicalClient::new(cfg, allow_ssh_keychain)?;
     let secrets = client.list_secrets(&bundle_path(bundle), true, false)?;
+    if secrets.is_empty() && bundle == AGENT_AUTH_BUNDLE {
+        let legacy_agent_auth_exists = client
+            .list_secrets("/", false, false)?
+            .iter()
+            .any(|secret| is_reserved_remote_key(&secret.secret_key));
+        if legacy_agent_auth_exists {
+            return Ok(Some(BTreeMap::new()));
+        }
+    }
     if secrets.is_empty() {
         return Ok(None);
     }
@@ -780,13 +789,17 @@ pub(crate) fn remote_list_bundles(cfg: &Config, allow_ssh_keychain: bool) -> Res
     let client = InfisicalClient::new(cfg, allow_ssh_keychain)?;
     let mut bundles = Vec::new();
     for secret in client.list_secrets("/", false, true)? {
-        let bundle = if secret.secret_path == "/" || secret.secret_path.trim().is_empty() {
+        let mut bundle = if secret.secret_path == "/" || secret.secret_path.trim().is_empty() {
             "global".to_string()
         } else {
             secret.secret_path.trim_matches('/').to_string()
         };
-        if is_reserved_remote_key(&secret.secret_key) && bundle != AGENT_AUTH_BUNDLE {
-            continue;
+        if is_reserved_remote_key(&secret.secret_key) {
+            if bundle == "global" {
+                bundle = AGENT_AUTH_BUNDLE.to_string();
+            } else if bundle != AGENT_AUTH_BUNDLE {
+                continue;
+            }
         }
         if bundle == "authless" || bundle.starts_with("authless/") {
             continue;

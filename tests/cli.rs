@@ -517,6 +517,20 @@ fn rage_grok_migrates_legacy_root_agent_auth_to_agents_bundle() {
 
     infisical
         .apply(&mut home.rage())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout("agents\n");
+
+    infisical
+        .apply(&mut home.rage())
+        .args(["sync", "agents"])
+        .assert()
+        .success()
+        .stdout("synced agents\n");
+
+    infisical
+        .apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .arg("grok")
         .assert()
