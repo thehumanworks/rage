@@ -9,7 +9,7 @@ cargo test --locked --bins
 cargo test --locked --tests
 cargo build --locked --release
 ./target/release/rage --help >/dev/null
-for command in init auth config list set unset delete-bundle get sync load exec shell ssh tui; do
+for command in init auth import config list set unset delete-bundle get sync load exec shell ssh grok codex tui; do
   ./target/release/rage "$command" --help >/dev/null
 done
 

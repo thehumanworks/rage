@@ -2,7 +2,7 @@
 
 Goal: add a `rage tui` subcommand that opens an interactive terminal UI for browsing and editing the bundles already managed by `rage`, without weakening any of the project invariants in `AGENTS.md`.
 
-The TUI must be a thin presentation layer over the existing helpers in `src/main.rs` (`gcp_list_bundles`, `gcp_read_bundle`, `gcp_write_bundle`, `gcp_delete_bundle`, `sync_bundle`, `read_cache`, `write_cache`, `validate_env_key`). No new GCP transport. No plaintext on disk. No daemon.
+The TUI must be a thin presentation layer over the existing helpers in `src/main.rs` (`remote_list_bundles`, `remote_read_bundle`, `remote_write_bundle`, `remote_delete_bundle`, `sync_bundle`, `read_cache`, `write_cache`, `validate_env_key`). No new Infisical transport. No plaintext on disk. No daemon.
 
 A change set is "done" when every criterion below is satisfied.
 
@@ -32,15 +32,15 @@ A change set is "done" when every criterion below is satisfied.
 
 ## Out of scope (for this iteration)
 
-- Live GCP smoke test for the TUI (`scripts/smoke-gcp.sh`).
-- Mouse support, theming, search/filter, paging through GCP list responses inside the UI.
+- Live Infisical smoke test for the TUI (`scripts/smoke-infisical.sh`).
+- Mouse support, theming, search/filter, paging through Infisical list responses inside the UI.
 - A separate background thread for long-running fetches; v1 is allowed to block the UI thread during a sync with a "Syncing…" status line.
 
 # Release Distribution Verification Contract
 
 Goal: ship signed-by-tag prebuilt binaries of `rage` for the four supported host
 combinations and a smart installer script users can curl-pipe. No new runtime
-behavior, no changes to the GCP/age invariants in `AGENTS.md`.
+behavior, no changes to the Infisical/age invariants in `AGENTS.md`.
 
 ## Criteria
 
@@ -96,3 +96,39 @@ R7. **Existing CI is untouched in spirit.** `.github/workflows/ci.yml` still
     after changes (no Rust source files modified by this task except possibly
     a `Cargo.toml` `[profile.release]` tuning section). `scripts/harness-audit.sh`
     exits 0.
+
+# Agent Auth Verification Contract
+
+Goal: absorb the useful `authless` Grok/Codex runner behavior into `rage`
+without writing plaintext auth records to repo files, logs, process arguments,
+or long-lived local caches.
+
+## Criteria
+
+A1. **Import commands exist.** `rage import grok <auth-file>` converts a Grok
+    OIDC auth cache into a portable auth record, and `rage import codex
+    <auth-file>` converts a Codex ChatGPT auth cache. The imported records are
+    written only to Infisical root secrets named `AUTHLESS_<PROVIDER>_JSON`.
+
+A2. **Grok runner is env-scoped.** `rage grok [-- <args...>]` loads and
+    refreshes the Grok auth record when stale, persists rotated refresh tokens,
+    and launches `grok` with only `GROK_CODE_XAI_API_KEY` intentionally added to
+    the child environment.
+
+A3. **Codex runner is file-scoped.** `rage codex [-- <args...>]` loads and
+    refreshes the Codex auth record when stale, writes a Codex-compatible
+    `auth.json` under `${CODEX_HOME:-$HOME/.codex}` for the child process, and
+    removes a file it created on exit. `--force` backs up an existing file,
+    overwrites it for the child, and restores it after exit.
+
+A4. **Refresh is safe.** Grok refresh uses a form OAuth refresh request; Codex
+    refresh uses a JSON OAuth refresh request. Refresh-token rotation is written
+    back before launching the child. If a refresh fails, `rage` rereads the
+    remote auth record once so a concurrent successful refresh can win.
+
+A5. **Errors are redacted.** Provider refresh errors must not print raw access
+    tokens, refresh tokens, JWTs, or full auth JSON.
+
+A6. **Deterministic coverage exists.** `tests/cli.rs` covers remote import,
+    fake OAuth refresh, fake Grok env injection, and fake Codex auth-file
+    creation/cleanup. Live provider checks are not part of default tests.

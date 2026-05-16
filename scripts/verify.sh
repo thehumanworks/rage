@@ -7,10 +7,10 @@ scripts/qa.sh
 scripts/smoke-local.sh
 scripts/harness-audit.sh
 
-if [ "${RAGE_LIVE_GCP:-0}" = "1" ]; then
-  scripts/smoke-gcp.sh
+if [ "${RAGE_LIVE_INFISICAL:-0}" = "1" ]; then
+  scripts/smoke-infisical.sh
 else
-  echo "verify: skipped live GCP smoke; set RAGE_LIVE_GCP=1 with RAGE_GCP_PROJECT and auth env to run it"
+  echo "verify: skipped live Infisical smoke; set RAGE_LIVE_INFISICAL=1 with INFISICAL_TOKEN to run it"
 fi
 
 echo "verify: ok"

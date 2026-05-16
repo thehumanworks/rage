@@ -20,8 +20,8 @@ use ratatui::{
 };
 
 use crate::{
-    Config, gcp_delete_bundle, gcp_list_bundles, gcp_read_bundle, gcp_write_bundle, identity_text,
-    read_cache, sync_bundle, validate_env_key,
+    Config, identity_text, read_cache, remote_delete_bundle, remote_list_bundles,
+    remote_read_bundle, remote_write_bundle, sync_bundle, validate_bundle_key,
 };
 
 const MASK_GLYPHS: &str = "••••••••";
@@ -196,7 +196,7 @@ fn event_loop<B: ratatui::backend::Backend>(
     allow_ssh_keychain: bool,
 ) -> Result<()> {
     let mut state = AppState::new();
-    match gcp_list_bundles(cfg, allow_ssh_keychain) {
+    match remote_list_bundles(cfg, allow_ssh_keychain) {
         Ok(bundles) => state.set_bundles(bundles),
         Err(err) => state.error(format!("list bundles: {err}")),
     }
@@ -223,7 +223,7 @@ fn event_loop<B: ratatui::backend::Backend>(
 fn dispatch(state: &mut AppState, action: Action, cfg: &Config, allow_ssh_keychain: bool) {
     match action {
         Action::None | Action::Quit => {}
-        Action::RefreshBundles => match gcp_list_bundles(cfg, allow_ssh_keychain) {
+        Action::RefreshBundles => match remote_list_bundles(cfg, allow_ssh_keychain) {
             Ok(bundles) => {
                 state.set_bundles(bundles);
                 state.info("refreshed bundle list");
@@ -259,33 +259,35 @@ fn dispatch(state: &mut AppState, action: Action, cfg: &Config, allow_ssh_keycha
             },
             Err(err) => state.error(format!("sync {bundle}: {err}")),
         },
-        Action::DeleteBundle(bundle) => match gcp_delete_bundle(cfg, &bundle, allow_ssh_keychain) {
-            Ok(()) => {
-                state.bundles.retain(|b| b != &bundle);
-                if state.bundle_index >= state.bundles.len() && !state.bundles.is_empty() {
-                    state.bundle_index = state.bundles.len() - 1;
+        Action::DeleteBundle(bundle) => {
+            match remote_delete_bundle(cfg, &bundle, allow_ssh_keychain) {
+                Ok(()) => {
+                    state.bundles.retain(|b| b != &bundle);
+                    if state.bundle_index >= state.bundles.len() && !state.bundles.is_empty() {
+                        state.bundle_index = state.bundles.len() - 1;
+                    }
+                    if state.current_bundle.as_deref() == Some(bundle.as_str()) {
+                        state.current_bundle = None;
+                        state.detail.clear();
+                        state.detail_keys.clear();
+                        state.detail_index = 0;
+                        state.view = View::Bundles;
+                    }
+                    state.info(format!("deleted {bundle}"));
                 }
-                if state.current_bundle.as_deref() == Some(bundle.as_str()) {
-                    state.current_bundle = None;
-                    state.detail.clear();
-                    state.detail_keys.clear();
-                    state.detail_index = 0;
-                    state.view = View::Bundles;
-                }
-                state.info(format!("deleted {bundle}"));
+                Err(err) => state.error(format!("delete {bundle}: {err}")),
             }
-            Err(err) => state.error(format!("delete {bundle}: {err}")),
-        },
+        }
         Action::SetKey { bundle, key, value } => {
-            if let Err(err) = validate_env_key(&key) {
+            if let Err(err) = validate_bundle_key(&key) {
                 state.error(format!("{err}"));
                 return;
             }
             let result = (|| -> Result<BTreeMap<String, String>> {
                 let mut env =
-                    gcp_read_bundle(cfg, &bundle, allow_ssh_keychain)?.unwrap_or_default();
+                    remote_read_bundle(cfg, &bundle, allow_ssh_keychain)?.unwrap_or_default();
                 env.insert(key.clone(), value);
-                gcp_write_bundle(cfg, &bundle, &env, allow_ssh_keychain)?;
+                remote_write_bundle(cfg, &bundle, &env, allow_ssh_keychain)?;
                 crate::write_cache(cfg, &bundle, &env)?;
                 Ok(env)
             })();
@@ -301,10 +303,10 @@ fn dispatch(state: &mut AppState, action: Action, cfg: &Config, allow_ssh_keycha
         }
         Action::UnsetKey { bundle, key } => {
             let result = (|| -> Result<BTreeMap<String, String>> {
-                let mut env = gcp_read_bundle(cfg, &bundle, allow_ssh_keychain)?
+                let mut env = remote_read_bundle(cfg, &bundle, allow_ssh_keychain)?
                     .with_context(|| format!("remote bundle '{bundle}' does not exist"))?;
                 env.remove(&key);
-                gcp_write_bundle(cfg, &bundle, &env, allow_ssh_keychain)?;
+                remote_write_bundle(cfg, &bundle, &env, allow_ssh_keychain)?;
                 crate::write_cache(cfg, &bundle, &env)?;
                 Ok(env)
             })();
@@ -369,7 +371,7 @@ fn handle_bundles_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Char('D') => {
             if let Some(bundle) = state.selected_bundle().map(str::to_owned) {
                 state.view = View::Confirm(ConfirmState {
-                    prompt: format!("Delete bundle '{bundle}' from GCP? (y/n)"),
+                    prompt: format!("Delete bundle '{bundle}' from Infisical? (y/n)"),
                     action: ConfirmAction::DeleteBundle { bundle },
                 });
             }

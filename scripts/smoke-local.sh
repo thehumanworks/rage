@@ -22,11 +22,11 @@ trap cleanup EXIT INT TERM
 
 export RAGE_CONFIG_DIR="$tmp/config"
 export RAGE_CACHE_DIR="$tmp/cache"
-unset RAGE_GCP_ACCESS_TOKEN RAGE_GCP_SERVICE_ACCOUNT_JSON RAGE_GCP_SECRET_MANAGER_ENDPOINT
+unset INFISICAL_TOKEN RAGE_INFISICAL_ENDPOINT RAGE_INFISICAL_PROJECT_ID RAGE_INFISICAL_ENVIRONMENT
 mkdir -p "$RAGE_CONFIG_DIR" "$RAGE_CACHE_DIR"
 
 ./target/release/rage init \
-  --gcp-project local-smoke \
+  --infisical-project-id local-smoke \
   --age-identity "$tmp/key.txt" >/dev/null
 
 test -f "$tmp/key.txt"
@@ -46,7 +46,7 @@ chmod +x "$fake_bin/security"
 recipient="$(sed -n 's/^age_recipient = "\\(.*\\)"/\\1/p' "$RAGE_CONFIG_DIR/rage/config.toml")"
 
 ./target/release/rage init \
-  --gcp-project local-smoke \
+  --infisical-project-id local-smoke \
   --age-recipient "$recipient" \
   --age-identity acct \
   --age-identity-source keychain \

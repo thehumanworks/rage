@@ -1,16 +1,16 @@
 # rage
 
-`rage` is a small Rust CLI for using GCP Secret Manager as a personal secrets
-store while keeping day-to-day shell startup fast.
+`rage` is a small Rust CLI for using Infisical as a personal secrets store
+while keeping day-to-day shell startup fast.
 
 The model is:
 
 ```text
-GCP Secret Manager -> rage sync -> age-encrypted local cache -> rage shell/exec/ssh
+Infisical -> rage sync -> age-encrypted local cache -> rage shell/exec/ssh
 ```
 
-GCP is the source of truth. Local shells and commands load from the encrypted
-cache, so they do not pay a network round trip on every shell init.
+Infisical is the source of truth. Local shells and commands load from the
+encrypted cache, so they do not pay a network round trip on every shell init.
 
 ## Install
 
@@ -50,12 +50,11 @@ Releases page and add the extracted directory to `PATH`.
 
 ## Requirements
 
-- A GCP project with Secret Manager enabled.
-- A GCP credential for `rage`: either an imported service account JSON
-  encrypted by `rage`, `RAGE_GCP_SERVICE_ACCOUNT_JSON`, or
-  `RAGE_GCP_ACCESS_TOKEN`.
-- IAM permission to create/read Secret Manager secrets. For remote read-only
-  machines, grant only `roles/secretmanager.secretAccessor`.
+- An Infisical project and a machine identity or token with access to the
+  target environment.
+- Either `INFISICAL_TOKEN`, or both
+  `INFISICAL_MACHINE_IDENTITY_CLIENT_ID` and
+  `INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET`, set when using remote commands.
 
 ## Setup
 
@@ -64,9 +63,16 @@ identity if it does not exist and derives the public recipient automatically:
 
 ```sh
 rage init \
-  --gcp-project YOUR_GCP_PROJECT \
   --age-identity ~/.config/rage/key.txt
 ```
+
+If `INFISICAL_TOKEN` is a legacy service token, `rage init` reads token metadata
+and stores the project ID automatically. For machine identity access tokens or
+client ID/secret auth, `rage init` can infer the project when the identity can
+see exactly one project. If it can see multiple projects, set
+`INFISICAL_PROJECT_SLUG`, set `INFISICAL_PROJECT_ID`, or pass
+`--infisical-project-id`. You can also pass `--infisical-environment` or
+`--infisical-endpoint` explicitly.
 
 This writes `~/Library/Application Support/rage/config.toml` on macOS unless
 `RAGE_CONFIG_DIR` is set. The encrypted cache defaults to
@@ -75,24 +81,36 @@ This writes `~/Library/Application Support/rage/config.toml` on macOS unless
 The generated `key.txt` contains the private age identity. Keep it local and do
 not commit it. The config stores only the derived public `age_recipient`.
 
-Configure GCP auth without installing `gcloud`:
+Check Infisical auth visibility with a direct token:
 
 ```sh
-rage auth import-service-account < gcp-service-account.json
+INFISICAL_TOKEN=st.x rage auth status
+```
+
+Or use Universal Auth credentials for a machine identity:
+
+```sh
+export INFISICAL_MACHINE_IDENTITY_CLIENT_ID=...
+export INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET=...
+export INFISICAL_PROJECT_ID=...
 rage auth status
 ```
 
-The imported service account JSON is stored under the `rage` config directory
-encrypted with your local age recipient. For ephemeral environments, you can
-instead set `RAGE_GCP_SERVICE_ACCOUNT_JSON` to the raw JSON credential or
-`RAGE_GCP_ACCESS_TOKEN` to a short-lived OAuth access token.
+`INFISICAL_TOKEN` takes precedence when it is set. Without `INFISICAL_TOKEN`,
+`rage` exchanges the machine identity client ID and secret for a short-lived
+Bearer token through Infisical's Universal Auth endpoint.
+
+For non-default Infisical domains, set `RAGE_INFISICAL_ENDPOINT` or
+`INFISICAL_API_URL`. `RAGE_INFISICAL_PROJECT_ID`/`INFISICAL_PROJECT_ID` and
+`RAGE_INFISICAL_ENVIRONMENT`/`INFISICAL_ENVIRONMENT` can override the stored
+project or environment at runtime.
 
 By default, `rage` reads the age identity from a file. macOS Keychain identity
 loading is opt-in and still needs an explicit public recipient:
 
 ```sh
 rage init \
-  --gcp-project YOUR_GCP_PROJECT \
+  --infisical-project-id YOUR_INFISICAL_PROJECT_ID \
   --age-recipient "$recipient" \
   --age-identity acct \
   --age-identity-source keychain \
@@ -155,9 +173,38 @@ rage tui
 The TUI is a thin presentation layer over the same commands documented above.
 It lists remote bundles, shows the keys in the selected bundle with values
 masked by default (toggle with `m`), and supports `a`dd, `e`dit, `d`elete
-operations that go through the existing GCP write and cache paths. It honors
+operations that go through the existing Infisical write and cache paths. It honors
 the same SSH/Keychain guard as the other commands and refuses to open when
 stdout is not a terminal.
+
+## Agent Auth
+
+`rage` can import existing Grok and Codex auth files into Infisical, refresh
+them when needed, and launch the matching CLI without keeping the original auth
+cache on disk. These records are stored as root-level `AUTHLESS_<TOOL>_JSON`
+secrets and are reserved from normal `rage load/shell/exec` bundle output.
+
+Bootstrap Grok from a logged-in machine:
+
+```sh
+rage import grok ~/.grok/auth.json
+rage grok -- -p "hello"
+```
+
+`rage grok` refreshes the stored record when it is expired or near expiry, then
+sets only `GROK_CODE_XAI_API_KEY` for the child process.
+
+Bootstrap Codex from a ChatGPT login:
+
+```sh
+rage import codex ~/.codex/auth.json
+rage codex
+```
+
+`rage codex` writes a temporary Codex-compatible `auth.json` under
+`${CODEX_HOME:-$HOME/.codex}` for the child process. If the file did not exist
+before launch, it is removed on exit. Pass `--force` to temporarily overwrite an
+existing `auth.json` and restore it after the child exits.
 
 Forward selected cached secrets over SSH:
 
@@ -180,21 +227,25 @@ machine/macbook
 ssh/build-box
 ```
 
-Internally, bundle names are base64url encoded into GCP Secret Manager IDs under
-the configured prefix, so slashes and nested namespaces are safe.
+Internally, bundle names map directly to Infisical secret paths. `global` uses
+the Infisical root path `/`; `project/foo/dev` stores environment keys under
+`/project/foo/dev`. Nested bundles require a token that can create or use those
+folders.
 
 ## Security Notes
 
-- GCP stores the remote secret values. Use a dedicated project and narrow IAM.
+- Infisical stores the remote secret values. Use a dedicated project/token and
+  narrow token scopes where possible.
 - The local cache is encrypted with `age`.
 - File identities are the default. macOS Keychain identities are explicit and
   require `--allow-ssh-keychain` when `rage` is itself running over SSH.
 - `rage shell` and `rage exec` inject plaintext values into child process
   environments. That is convenient, but environment variables are still visible
   to processes with sufficient local access.
-- Remote machines can use a service account JSON key for simplicity, but that
-  key is a bearer credential. Prefer read-only access and rotate it.
-- `rage` does not require the `gcloud`, `age`, or `age-keygen` binaries.
+- `INFISICAL_TOKEN` is a bearer credential. Prefer read-only access on remote
+  machines unless writing is required, and rotate it.
+- `rage` does not require the `infisical`, `gcloud`, `age`, or `age-keygen`
+  binaries.
 
 ## Development
 
@@ -210,16 +261,16 @@ Narrow Rust-only gate:
 scripts/qa.sh
 ```
 
-Local end-to-end smoke without GCP:
+Local end-to-end smoke without Infisical:
 
 ```sh
 scripts/smoke-local.sh
 ```
 
-Disposable live GCP smoke:
+Disposable live Infisical smoke:
 
 ```sh
-scripts/smoke-gcp.sh
+scripts/smoke-infisical.sh
 ```
 
 AI harness audit:

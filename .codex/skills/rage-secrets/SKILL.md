@@ -1,6 +1,6 @@
 ---
 name: rage-secrets
-description: Use when working inside the rage repository, a Rust CLI for GCP Secret Manager backed personal secrets with age-encrypted local cache, shell/exec/ssh loading, and explicit macOS Keychain SSH gating.
+description: Use when working inside the rage repository, a Rust CLI for Infisical backed personal secrets with age-encrypted local cache, shell/exec/ssh loading, agent auth runners, and explicit macOS Keychain SSH gating.
 ---
 
 # rage-secrets
@@ -22,15 +22,15 @@ For a compact completion checklist, read `references/checklist.md`.
 
 ## Core Rules
 
-- Preserve the model: `GCP Secret Manager -> rage sync -> age-encrypted local cache -> rage load/exec/shell/ssh`.
+- Preserve the model: `Infisical -> rage sync -> age-encrypted local cache -> rage load/exec/shell/ssh`.
 - Keep file-based age identities as the default.
 - Keep age generation/encryption/decryption native through the Rust `age` crate; do not require the `age` or `age-keygen` binaries.
-- Keep GCP access native through HTTPS/OAuth; do not require the `gcloud` CLI.
+- Keep Infisical access native through HTTPS; do not require the `infisical` or `gcloud` CLI.
 - Keep macOS Keychain identity loading explicit.
 - If running over SSH, Keychain identity loading must require `--allow-ssh-keychain`.
 - Never write plaintext secrets into repo files, tests, logs, or process arguments.
-- Keep `cargo test` deterministic. Use the fake Secret Manager server and fake external tools there.
-- Use `scripts/smoke-gcp.sh` only for explicit live Secret Manager verification.
+- Keep `cargo test` deterministic. Use the fake Infisical server and fake external tools there.
+- Use `scripts/smoke-infisical.sh` only for explicit live Infisical verification.
 
 ## Verification
 
@@ -38,7 +38,7 @@ Run the narrowest sufficient set, but do not skip the required gate for changed 
 
 - Default completion gate: `scripts/verify.sh`
 - Normal code inner loop: `scripts/qa.sh` and `scripts/smoke-local.sh`
-- GCP command behavior: add `scripts/smoke-gcp.sh` or `RAGE_LIVE_GCP=1 scripts/verify.sh`
+- Infisical request behavior: add `scripts/smoke-infisical.sh` or `RAGE_LIVE_INFISICAL=1 scripts/verify.sh`
 - Harness/docs/scripts: `scripts/harness-audit.sh`
 
 Report what ran and what was skipped.

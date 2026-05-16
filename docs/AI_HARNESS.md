@@ -14,12 +14,12 @@ This repository is prepared for agentic maintenance by making the safe path expl
 
 ## Common Agent Failure Modes This Harness Prevents
 
-- Treating GCP as required for every test.
+- Treating Infisical as required for every test.
 - Accidentally logging or committing plaintext secrets.
 - Making Keychain access automatic over SSH.
 - Putting secrets into SSH command-line arguments.
 - Changing command output without updating black-box tests.
-- Claiming GCP behavior is verified from fake tests only.
+- Claiming live Infisical behavior is verified from fake tests only.
 - Forgetting to run Clippy or release build.
 - Stopping after narrow tests without the local definition-of-done gate.
 
@@ -31,11 +31,11 @@ For code changes:
 scripts/verify.sh
 ```
 
-For GCP transport changes:
+For Infisical transport changes:
 
 ```sh
 scripts/verify.sh
-RAGE_LIVE_GCP=1 scripts/verify.sh
+RAGE_LIVE_INFISICAL=1 scripts/verify.sh
 ```
 
 For docs/harness changes:
@@ -50,7 +50,7 @@ Final answers should state:
 
 - files changed,
 - scripts/checks run,
-- whether live GCP was run or skipped,
+- whether live Infisical was run or skipped,
 - any remaining risk.
 
-Do not claim full live verification unless `scripts/smoke-gcp.sh` or an equivalent disposable live round trip ran successfully.
+Do not claim full live verification unless `scripts/smoke-infisical.sh` or an equivalent disposable live round trip ran successfully.

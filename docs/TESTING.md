@@ -9,7 +9,8 @@ scripts/verify.sh
 ```
 
 It runs `scripts/qa.sh`, `scripts/smoke-local.sh`, and
-`scripts/harness-audit.sh`. It runs live GCP only when `RAGE_LIVE_GCP=1` is set.
+`scripts/harness-audit.sh`. It runs live Infisical only when
+`RAGE_LIVE_INFISICAL=1` is set.
 
 ## QA Gate
 
@@ -44,20 +45,22 @@ This uses a temporary config/cache and lets `rage init` create a temporary age i
 - `rage exec`
 - Keychain identity source remains SSH-gated unless `--allow-ssh-keychain` is passed
 
-It must not touch real GCP, real Keychain items, or persistent config.
+It must not touch real Infisical, real Keychain items, or persistent config.
 
-## Live GCP Smoke
+## Live Infisical Smoke
 
-Run only when live Secret Manager verification is needed:
+Run only when live Infisical verification is needed:
 
 ```sh
-scripts/smoke-gcp.sh
+scripts/smoke-infisical.sh
 ```
 
-The script requires `RAGE_GCP_PROJECT` and either `RAGE_GCP_ACCESS_TOKEN` or
-`RAGE_GCP_SERVICE_ACCOUNT_JSON`. It creates a disposable prefixed secret,
-verifies `set -> sync -> get -> list`, then deletes the secret and confirms
-cleanup.
+The script requires either `INFISICAL_TOKEN` or
+`INFISICAL_MACHINE_IDENTITY_CLIENT_ID` plus
+`INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET`. If the identity can see multiple
+projects, set `INFISICAL_PROJECT_SLUG`, `INFISICAL_PROJECT_ID`, or
+`RAGE_INFISICAL_PROJECT_ID`. It creates a disposable root key, verifies `set ->
+sync -> get -> list`, then deletes the key and confirms cleanup.
 
 Do not wire this script into default tests unless the environment is explicitly a disposable integration environment.
 
@@ -82,16 +85,18 @@ external infrastructure; use fake services for deterministic coverage.
 ## Test Coverage Map
 
 - `src/main.rs` unit tests: encoding, dotenv rendering/parsing, shell quoting, JSON escaping, merge precedence, SSH script rendering.
-- `tests/cli.rs` integration tests: native age init/encrypt/decrypt, fake Secret Manager round trips, fake security Keychain gate, fake SSH argument/script handling, output formats, `unset`.
+- `src/agent_auth.rs` unit tests: timestamp handling and token redaction for provider refresh errors.
+- `tests/cli.rs` integration tests: native age init/encrypt/decrypt, fake Infisical round trips, fake security Keychain gate, fake SSH argument/script handling, output formats, `unset`, remote agent auth imports, fake OAuth refresh, and fake Grok/Codex child behavior.
 - `scripts/smoke-local.sh`: release binary local end-to-end behavior.
-- `scripts/smoke-gcp.sh`: live GCP Secret Manager behavior.
+- `scripts/smoke-infisical.sh`: live Infisical behavior.
 
 ## When To Add Tests
 
 Add or update tests whenever changing:
 
 - CLI arguments or output.
-- GCP HTTP request/response behavior.
+- Infisical HTTP request/response behavior.
+- agent auth import, refresh, redaction, child environment, or managed auth-file behavior.
 - cache path or encryption/decryption.
 - shell quoting or dotenv parsing.
 - SSH script generation.

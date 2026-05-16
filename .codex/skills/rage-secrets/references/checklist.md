@@ -19,12 +19,12 @@ Use this checklist before finalizing changes.
 - `scripts/qa.sh` passed for code changes.
 - Integration-impacting changes are covered under `tests/` and run by the default QA gate.
 - `scripts/smoke-local.sh` passed for local runtime changes.
-- `scripts/smoke-gcp.sh` passed for live GCP claims, or the final answer says it was skipped.
+- `scripts/smoke-infisical.sh` passed for live Infisical claims, or the final answer says it was skipped.
 - `scripts/harness-audit.sh` passed for harness/docs/script changes.
 
 ## Final Answer Evidence
 
 - Mention changed files at a high level.
 - Mention exact checks run.
-- Mention live GCP status.
+- Mention live Infisical status.
 - Mention any residual risk or untested external environment.
