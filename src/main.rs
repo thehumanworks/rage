@@ -24,6 +24,8 @@ const DEFAULT_SECRET_PREFIX: &str = "rage";
 const CONFIG_FILE_NAME: &str = "config.toml";
 const DEFAULT_INFISICAL_ENDPOINT: &str = "https://us.infisical.com";
 const DEFAULT_INFISICAL_ENVIRONMENT: &str = "prod";
+const AGENT_AUTH_BUNDLE: &str = "agents";
+const AGENT_AUTH_SECRET_PATH: &str = "/agents";
 
 #[derive(Parser)]
 #[command(name = "rage")]
@@ -276,6 +278,30 @@ struct Config {
     #[serde(default)]
     keychain_account: Option<String>,
     secret_prefix: String,
+    cache_dir: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawConfig {
+    #[serde(default)]
+    infisical_project_id: Option<String>,
+    #[serde(default)]
+    gcp_project: Option<String>,
+    #[serde(default = "default_infisical_environment")]
+    infisical_environment: String,
+    #[serde(default = "default_infisical_endpoint")]
+    infisical_endpoint: String,
+    age_recipient: String,
+    age_identity: String,
+    #[serde(default)]
+    age_identity_source: IdentitySource,
+    #[serde(default)]
+    keychain_service: Option<String>,
+    #[serde(default)]
+    keychain_account: Option<String>,
+    #[serde(default = "default_secret_prefix")]
+    secret_prefix: String,
+    #[serde(default = "default_cache_dir")]
     cache_dir: String,
 }
 
@@ -560,7 +586,13 @@ impl Config {
         let path = config_path()?;
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("read config at {}", path.display()))?;
-        let cfg: Config = toml::from_str(&raw)?;
+        let raw_cfg: RawConfig = toml::from_str(&raw)?;
+        let should_rewrite = raw_cfg.gcp_project.is_some()
+            || raw_cfg
+                .infisical_project_id
+                .as_deref()
+                .is_none_or(|project_id| project_id.trim().is_empty());
+        let cfg = Config::from_raw(raw_cfg)?;
         if cfg.infisical_project_id.trim().is_empty() {
             bail!("infisical_project_id is required in config");
         }
@@ -569,7 +601,31 @@ impl Config {
         }
         validate_secret_prefix(&cfg.secret_prefix)?;
         validate_identity_config(&cfg)?;
+        if should_rewrite {
+            fs::write(&path, toml::to_string_pretty(&cfg)?)
+                .with_context(|| format!("write migrated config at {}", path.display()))?;
+        }
         Ok(cfg)
+    }
+
+    fn from_raw(raw: RawConfig) -> Result<Self> {
+        let infisical_endpoint = env_infisical_endpoint(&raw.infisical_endpoint);
+        let infisical_project_id = match raw.infisical_project_id {
+            Some(project_id) if !project_id.trim().is_empty() => project_id,
+            _ => infer_infisical_project_id(&infisical_endpoint)?,
+        };
+        Ok(Self {
+            infisical_project_id,
+            infisical_environment: raw.infisical_environment,
+            infisical_endpoint,
+            age_recipient: raw.age_recipient,
+            age_identity: raw.age_identity,
+            age_identity_source: raw.age_identity_source,
+            keychain_service: raw.keychain_service,
+            keychain_account: raw.keychain_account,
+            secret_prefix: raw.secret_prefix,
+            cache_dir: raw.cache_dir,
+        })
     }
 }
 
@@ -579,6 +635,10 @@ fn default_infisical_environment() -> String {
 
 fn default_infisical_endpoint() -> String {
     DEFAULT_INFISICAL_ENDPOINT.to_string()
+}
+
+fn default_secret_prefix() -> String {
+    DEFAULT_SECRET_PREFIX.to_string()
 }
 
 fn normalize_endpoint(endpoint: &str) -> String {
@@ -720,14 +780,14 @@ pub(crate) fn remote_list_bundles(cfg: &Config, allow_ssh_keychain: bool) -> Res
     let client = InfisicalClient::new(cfg, allow_ssh_keychain)?;
     let mut bundles = Vec::new();
     for secret in client.list_secrets("/", false, true)? {
-        if is_reserved_remote_key(&secret.secret_key) {
-            continue;
-        }
         let bundle = if secret.secret_path == "/" || secret.secret_path.trim().is_empty() {
             "global".to_string()
         } else {
             secret.secret_path.trim_matches('/').to_string()
         };
+        if is_reserved_remote_key(&secret.secret_key) && bundle != AGENT_AUTH_BUNDLE {
+            continue;
+        }
         if bundle == "authless" || bundle.starts_with("authless/") {
             continue;
         }
@@ -771,13 +831,19 @@ fn url_component(value: &str) -> String {
 }
 
 pub(crate) fn read_remote_auth_record(cfg: &Config, provider: &str) -> Result<String> {
-    read_remote_secret(cfg, "/", &auth_secret_key(provider))?.with_context(|| {
-        format!("{provider} auth is not imported; run `rage import {provider} <auth-file>`")
-    })
+    let key = auth_secret_key(provider);
+    if let Some(raw) = read_remote_secret(cfg, AGENT_AUTH_SECRET_PATH, &key)? {
+        return Ok(raw);
+    }
+    if let Some(raw) = read_remote_secret(cfg, "/", &key)? {
+        write_remote_auth_record(cfg, provider, &raw)?;
+        return Ok(raw);
+    }
+    bail!("{provider} auth is not imported; run `rage import {provider} <auth-file>`")
 }
 
 pub(crate) fn write_remote_auth_record(cfg: &Config, provider: &str, raw: &str) -> Result<()> {
-    write_remote_secret(cfg, "/", &auth_secret_key(provider), raw)
+    write_remote_secret(cfg, AGENT_AUTH_SECRET_PATH, &auth_secret_key(provider), raw)
 }
 
 fn auth_secret_key(provider: &str) -> String {

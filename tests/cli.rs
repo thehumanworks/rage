@@ -119,6 +119,46 @@ fn init_uses_machine_identity_credentials_and_infers_single_project() {
 }
 
 #[test]
+fn legacy_gcp_config_migrates_to_inferred_infisical_project_id() {
+    let home = TestHome::new();
+    let identity_path = init_file_identity(&home);
+    let recipient = config_value(&home, "age_recipient");
+    let config_path = home.config_dir.join("rage/config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"gcp_project = "humanlabs"
+age_recipient = "{recipient}"
+age_identity = "{}"
+age_identity_source = "file"
+secret_prefix = "rage"
+cache_dir = "{}"
+"#,
+            identity_path.display(),
+            home.cache_dir.display()
+        ),
+    )
+    .unwrap();
+
+    let fake = FakeInfisical::new();
+    let stdout = fake
+        .apply_machine_identity(&mut home.rage())
+        .arg("config")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(stdout).unwrap();
+    assert!(stdout.contains("infisical_project_id = \"test-project\""));
+    assert!(!stdout.contains("gcp_project"));
+
+    let migrated = fs::read_to_string(config_path).unwrap();
+    assert!(migrated.contains("infisical_project_id = \"test-project\""));
+    assert!(!migrated.contains("gcp_project"));
+}
+
+#[test]
 fn load_and_exec_read_real_age_encrypted_cache_without_network() {
     let home = TestHome::new();
     init_file_identity(&home);
@@ -278,6 +318,20 @@ fn set_sync_get_and_list_round_trip_through_fake_infisical() {
 }
 
 #[test]
+fn list_shows_agents_bundle_when_agent_auth_is_imported() {
+    let home = TestHome::new();
+    init_file_identity(&home);
+    let fake = FakeInfisical::new();
+    fake.insert("/agents", "AUTHLESS_GROK_JSON", "agent-auth-json");
+
+    fake.apply(&mut home.rage())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout("agents\n");
+}
+
+#[test]
 fn load_sync_fetches_missing_cache_and_output_formats_are_stable() {
     let home = TestHome::new();
     init_file_identity(&home);
@@ -427,13 +481,51 @@ fn import_grok_writes_agent_auth_to_infisical() {
         .success()
         .stdout("imported grok auth\n");
 
-    let raw = fake.get("/", "AUTHLESS_GROK_JSON").unwrap();
+    let raw = fake.get("/agents", "AUTHLESS_GROK_JSON").unwrap();
     assert!(raw.contains("access-imported"));
+    fake.apply(&mut home.rage())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout("agents\n");
     assert!(
         !home
             .config_dir
             .join("rage/agent-auth/grok.json.age")
             .exists()
+    );
+}
+
+#[test]
+fn rage_grok_migrates_legacy_root_agent_auth_to_agents_bundle() {
+    let home = TestHome::new();
+    init_file_identity(&home);
+    let infisical = FakeInfisical::new();
+    let auth = serde_json::json!({
+        "client_id": "b1a00492-073a-47ea-816f-4c329264a828",
+        "issuer": "https://auth.x.ai",
+        "access_token": "access-old",
+        "refresh_token": "refresh-old",
+        "expires_at": "2099-01-01T00:00:00.000Z",
+        "token_type": "Bearer",
+    });
+    infisical.insert("/", "AUTHLESS_GROK_JSON", &auth.to_string());
+    let fake = fake_agent_bin(
+        "grok",
+        "#!/bin/sh\nprintf 'token=%s\\n' \"$GROK_CODE_XAI_API_KEY\"\n",
+    );
+
+    infisical
+        .apply(&mut home.rage())
+        .env("PATH", prepend_path(&fake.bin_dir))
+        .arg("grok")
+        .assert()
+        .success()
+        .stdout("token=access-old\n");
+
+    assert_eq!(
+        infisical.get("/agents", "AUTHLESS_GROK_JSON").unwrap(),
+        auth.to_string()
     );
 }
 

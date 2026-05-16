@@ -78,6 +78,11 @@ This writes `~/Library/Application Support/rage/config.toml` on macOS unless
 `RAGE_CONFIG_DIR` is set. The encrypted cache defaults to
 `~/Library/Caches/rage` unless `RAGE_CACHE_DIR` is set.
 
+Legacy configs from the GCP-backed version that contain `gcp_project` are
+migrated on first load. `rage` infers the Infisical project ID from
+`INFISICAL_PROJECT_ID`, service-token metadata, `INFISICAL_PROJECT_SLUG`, or a
+single visible project, then rewrites the config in the new format.
+
 The generated `key.txt` contains the private age identity. Keep it local and do
 not commit it. The config stores only the derived public `age_recipient`.
 
@@ -181,8 +186,9 @@ stdout is not a terminal.
 
 `rage` can import existing Grok and Codex auth files into Infisical, refresh
 them when needed, and launch the matching CLI without keeping the original auth
-cache on disk. These records are stored as root-level `AUTHLESS_<TOOL>_JSON`
-secrets and are reserved from normal `rage load/shell/exec` bundle output.
+cache on disk. These records are stored in the `agents` bundle as
+`AUTHLESS_<TOOL>_JSON` secrets and are reserved from normal
+`rage load/shell/exec` output.
 
 Bootstrap Grok from a logged-in machine:
 
