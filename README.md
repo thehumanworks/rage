@@ -48,6 +48,24 @@ locked-down machine.
 For Windows, download `rage-<version>-x86_64-pc-windows-msvc.zip` from the
 Releases page and add the extracted directory to `PATH`.
 
+### npm
+
+`rage` is also packaged as a single npm package that downloads the matching
+GitHub Release binary during install:
+
+```sh
+npm install -g @nothumanwork/rage
+```
+
+The npm installer supports macOS aarch64, Linux x86_64, Linux aarch64, and
+Windows x86_64. For the private GitHub repository, set `GITHUB_TOKEN` or
+`RAGE_GITHUB_TOKEN` to a token with `contents:read`; if neither is set, the
+installer falls back to `gh auth token` when the GitHub CLI is signed in.
+
+Useful overrides: `RAGE_VERSION=v0.1.1` pins a release tag,
+`RAGE_REPO=owner/repo` selects another GitHub repository, and
+`RAGE_NPM_SKIP_DOWNLOAD=1` skips the postinstall download for packaging tests.
+
 ## Requirements
 
 - An Infisical project and a machine identity or token with access to the

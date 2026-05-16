@@ -29,6 +29,7 @@ const AGENT_AUTH_SECRET_PATH: &str = "/agents";
 
 #[derive(Parser)]
 #[command(name = "rage")]
+#[command(version)]
 #[command(about = "Fast local shell secrets backed by Infisical and age-encrypted cache")]
 struct Cli {
     #[command(subcommand)]

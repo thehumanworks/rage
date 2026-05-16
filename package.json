@@ -1,0 +1,29 @@
+{
+  "name": "@nothumanwork/rage",
+  "version": "0.1.1",
+  "description": "Fast local shell secrets backed by Infisical and age-encrypted cache.",
+  "license": "UNLICENSED",
+  "private": false,
+  "bin": {
+    "rage": "bin/rage.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/npm-install.js",
+    "test:npm-package": "node --check scripts/npm-install.js && node --check bin/rage.js && RAGE_NPM_SKIP_DOWNLOAD=1 node scripts/npm-install.js"
+  },
+  "files": [
+    "bin/rage.js",
+    "scripts/npm-install.js",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thehumanworks/rage.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
