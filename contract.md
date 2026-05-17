@@ -101,7 +101,7 @@ R7. **Existing CI is untouched in spirit.** `.github/workflows/ci.yml` still
 
 Goal: absorb the useful `authless` Grok/Codex runner behavior into `rage`
 without writing plaintext auth records to repo files, logs, process arguments,
-or long-lived local caches.
+or any local path other than the provider auth cache the user explicitly runs.
 
 ## Criteria
 
@@ -110,16 +110,19 @@ A1. **Import commands exist.** `rage import grok <auth-file>` converts a Grok
     <auth-file>` converts a Codex ChatGPT auth cache. The imported records are
     written only to Infisical root secrets named `AUTHLESS_<PROVIDER>_JSON`.
 
-A2. **Grok runner is env-scoped.** `rage grok [-- <args...>]` loads and
-    refreshes the Grok auth record when stale, persists rotated refresh tokens,
-    and launches `grok` with only `GROK_CODE_XAI_API_KEY` intentionally added to
-    the child environment.
+A2. **Grok runner is cache-scoped by default.** `rage grok [-- <args...>]`
+    loads and refreshes the Grok auth record when stale, persists rotated
+    refresh tokens, writes `~/.grok/auth.json`, and launches `grok` without
+    intentionally adding the access token to the child environment. `-e` /
+    `--ephemeral` keeps the older env-scoped launch behavior and does not write
+    the Grok auth cache.
 
-A3. **Codex runner is file-scoped.** `rage codex [-- <args...>]` loads and
-    refreshes the Codex auth record when stale, writes a Codex-compatible
-    `auth.json` under `${CODEX_HOME:-$HOME/.codex}` for the child process, and
-    removes a file it created on exit. `--force` backs up an existing file,
-    overwrites it for the child, and restores it after exit.
+A3. **Codex runner is cache-scoped by default.** `rage codex [-- <args...>]`
+    loads and refreshes the Codex auth record when stale, writes a
+    Codex-compatible `auth.json` under `${CODEX_HOME:-$HOME/.codex}`, and leaves
+    it cached for future Codex launches. `-e` / `--ephemeral` removes a file it
+    created on exit or restores the previous file. `--force` remains a
+    compatibility alias for temporary Codex behavior.
 
 A4. **Refresh is safe.** Grok refresh uses a form OAuth refresh request; Codex
     refresh uses a JSON OAuth refresh request. Refresh-token rotation is written

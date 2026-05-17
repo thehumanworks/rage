@@ -60,6 +60,9 @@ pub(crate) struct RunArgs {
     /// Refresh before expiry by this many seconds.
     #[arg(long, default_value_t = DEFAULT_REFRESH_MARGIN_SECONDS)]
     refresh_margin_secs: u64,
+    /// Use only a child-process environment variable and do not update ~/.grok/auth.json.
+    #[arg(long, short = 'e')]
+    ephemeral: bool,
     /// Arguments passed to the tool.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<OsString>,
@@ -76,6 +79,9 @@ pub(crate) struct CodexArgs {
     /// Temporarily replace an existing Codex auth.json and restore it after exit.
     #[arg(long, short)]
     force: bool,
+    /// Remove the managed Codex auth.json on process exit, restoring any previous file.
+    #[arg(long, short = 'e')]
+    ephemeral: bool,
     /// Arguments passed to Codex.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<OsString>,
@@ -178,6 +184,12 @@ pub(crate) fn run_grok(args: RunArgs, cfg: &Config) -> Result<()> {
         args.refresh_margin_secs,
     )?
     .auth;
+    if !args.ephemeral {
+        let _auth_file =
+            prepare_managed_auth_file(grok_auth_path(), grok_auth_json(&auth)?, "grok", false)?;
+        return run_tool("grok", args.command, &BTreeMap::new());
+    }
+
     let mut env = BTreeMap::new();
     env.insert(GROK_AUTH_ENV_VAR.to_string(), auth.access_token);
     run_tool("grok", args.command, &env)
@@ -191,11 +203,17 @@ pub(crate) fn run_codex(args: CodexArgs, cfg: &Config) -> Result<()> {
         args.refresh_margin_secs,
     )?
     .auth;
-    let prepared = prepare_codex_home(&auth, args.force)?;
+    let codex_home = codex_home();
+    let prepared = prepare_managed_auth_file(
+        codex_home.join("auth.json"),
+        codex_auth_json(&auth)?,
+        "codex",
+        args.ephemeral || args.force,
+    )?;
     let mut env = BTreeMap::new();
     env.insert(
         "CODEX_HOME".to_string(),
-        prepared.codex_home.to_string_lossy().into_owned(),
+        codex_home.to_string_lossy().into_owned(),
     );
     let status = tool_status("codex", args.command, &env);
     let cleanup = prepared.cleanup();
@@ -530,67 +548,94 @@ fn strip_leading_dashdash(args: Vec<OsString>) -> Vec<OsString> {
     args
 }
 
-struct PreparedCodexHome {
-    codex_home: PathBuf,
+struct PreparedAuthFile {
     auth_path: PathBuf,
     backup_path: Option<PathBuf>,
-    had_existing_auth: bool,
-    force: bool,
+    cleanup: AuthFileCleanup,
 }
 
-impl PreparedCodexHome {
+#[derive(Clone, Copy)]
+enum AuthFileCleanup {
+    None,
+    RemoveCreated,
+    RestoreBackup,
+}
+
+impl PreparedAuthFile {
     fn cleanup(&self) -> Result<()> {
-        if self.force && self.had_existing_auth {
-            if let Some(backup_path) = &self.backup_path {
-                fs::copy(backup_path, &self.auth_path).with_context(|| {
-                    format!("restore Codex auth.json from {}", backup_path.display())
-                })?;
+        match self.cleanup {
+            AuthFileCleanup::None => {}
+            AuthFileCleanup::RestoreBackup => {
+                let Some(backup_path) = &self.backup_path else {
+                    return Ok(());
+                };
+                fs::copy(backup_path, &self.auth_path)
+                    .with_context(|| format!("restore auth.json from {}", backup_path.display()))?;
                 fs::remove_file(backup_path)
                     .with_context(|| format!("remove {}", backup_path.display()))?;
             }
-        } else if self.force || !self.had_existing_auth {
-            match fs::remove_file(&self.auth_path) {
+            AuthFileCleanup::RemoveCreated => match fs::remove_file(&self.auth_path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => {
                     return Err(err)
                         .with_context(|| format!("remove {}", self.auth_path.display()));
                 }
-            }
+            },
         }
         Ok(())
     }
 }
 
-fn prepare_codex_home(auth: &AuthRecord, force: bool) -> Result<PreparedCodexHome> {
-    let codex_home = codex_home();
-    let auth_path = codex_home.join("auth.json");
-    let backup_path = codex_home.join(format!(
-        ".rage-auth.json.backup-{}-{}",
+fn prepare_managed_auth_file(
+    auth_path: PathBuf,
+    content: String,
+    provider_name: &str,
+    ephemeral: bool,
+) -> Result<PreparedAuthFile> {
+    let auth_dir = auth_path
+        .parent()
+        .ok_or_else(|| anyhow!("auth path has no parent: {}", auth_path.display()))?;
+    let backup_path = auth_dir.join(format!(
+        ".rage-{provider_name}-auth.json.backup-{}-{}",
         std::process::id(),
         now_unix()
     ));
-    fs::create_dir_all(&codex_home).with_context(|| format!("create {}", codex_home.display()))?;
+    fs::create_dir_all(auth_dir).with_context(|| format!("create {}", auth_dir.display()))?;
     let had_existing_auth = auth_path.exists();
-    if force && had_existing_auth {
+    if ephemeral && had_existing_auth {
         fs::copy(&auth_path, &backup_path).with_context(|| {
             format!(
-                "backup existing Codex auth.json from {}",
+                "backup existing {} auth.json from {}",
+                provider_name,
                 auth_path.display()
             )
         })?;
         set_owner_read_write_only(&backup_path)?;
     }
-    fs::write(&auth_path, codex_auth_json(auth)?)
-        .with_context(|| format!("write {}", auth_path.display()))?;
+    fs::write(&auth_path, content).with_context(|| format!("write {}", auth_path.display()))?;
     set_owner_read_write_only(&auth_path)?;
-    Ok(PreparedCodexHome {
-        codex_home,
+
+    let cleanup = if ephemeral && had_existing_auth {
+        AuthFileCleanup::RestoreBackup
+    } else if ephemeral {
+        AuthFileCleanup::RemoveCreated
+    } else {
+        AuthFileCleanup::None
+    };
+
+    Ok(PreparedAuthFile {
         auth_path,
-        backup_path: (force && had_existing_auth).then_some(backup_path),
-        had_existing_auth,
-        force,
+        backup_path: (ephemeral && had_existing_auth).then_some(backup_path),
+        cleanup,
     })
+}
+
+fn grok_auth_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".grok")
+        .join("auth.json")
 }
 
 fn codex_home() -> PathBuf {
@@ -600,6 +645,19 @@ fn codex_home() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("~"))
         .join(".codex")
+}
+
+fn grok_auth_json(auth: &AuthRecord) -> Result<String> {
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&json!({
+            format!("{}::{}", GROK_ISSUER, GROK_CLIENT_ID): {
+                "key": auth.access_token,
+                "refresh_token": auth.refresh_token,
+                "expires_at": auth.expires_at,
+            }
+        }))?
+    ))
 }
 
 fn codex_auth_json(auth: &AuthRecord) -> Result<String> {

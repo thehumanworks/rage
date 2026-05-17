@@ -20,8 +20,9 @@ use ratatui::{
 };
 
 use crate::{
-    Config, identity_text, read_cache, remote_delete_bundle, remote_list_bundles,
-    remote_read_bundle, remote_write_bundle, sync_bundle, validate_bundle_key,
+    AGENT_AUTH_BUNDLE, Config, identity_text, is_reserved_agent_auth_key, read_cache,
+    remote_delete_bundle, remote_list_bundles, remote_read_bundle, remote_read_bundle_for_display,
+    remote_write_bundle, sync_bundle, validate_bundle_key,
 };
 
 const MASK_GLYPHS: &str = "••••••••";
@@ -230,6 +231,16 @@ fn dispatch(state: &mut AppState, action: Action, cfg: &Config, allow_ssh_keycha
             }
             Err(err) => state.error(format!("list bundles: {err}")),
         },
+        Action::OpenBundle(bundle) if bundle == AGENT_AUTH_BUNDLE => {
+            match remote_read_bundle_for_display(cfg, &bundle, allow_ssh_keychain) {
+                Ok(env) => {
+                    state.set_detail(bundle.clone(), env.unwrap_or_default());
+                    state.view = View::Detail;
+                    state.info(format!("opened {bundle}"));
+                }
+                Err(err) => state.error(format!("open {bundle}: {err}")),
+            }
+        }
         Action::OpenBundle(bundle) => match read_cache(cfg, &bundle, allow_ssh_keychain) {
             Ok(env) => {
                 state.set_detail(bundle.clone(), env);
@@ -248,7 +259,7 @@ fn dispatch(state: &mut AppState, action: Action, cfg: &Config, allow_ssh_keycha
             },
         },
         Action::SyncBundle(bundle) => match sync_bundle(cfg, &bundle, allow_ssh_keychain) {
-            Ok(()) => match read_cache(cfg, &bundle, allow_ssh_keychain) {
+            Ok(()) => match read_bundle_detail(cfg, &bundle, allow_ssh_keychain) {
                 Ok(env) => {
                     if state.current_bundle.as_deref() == Some(bundle.as_str()) {
                         state.set_detail(bundle.clone(), env);
@@ -321,6 +332,19 @@ fn dispatch(state: &mut AppState, action: Action, cfg: &Config, allow_ssh_keycha
             }
         }
     }
+}
+
+fn read_bundle_detail(
+    cfg: &Config,
+    bundle: &str,
+    allow_ssh_keychain: bool,
+) -> Result<BTreeMap<String, String>> {
+    if bundle == AGENT_AUTH_BUNDLE {
+        return Ok(
+            remote_read_bundle_for_display(cfg, bundle, allow_ssh_keychain)?.unwrap_or_default(),
+        );
+    }
+    read_cache(cfg, bundle, allow_ssh_keychain)
 }
 
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
@@ -421,6 +445,10 @@ fn handle_detail_key(state: &mut AppState, key: KeyEvent) -> Action {
             if let (Some(_bundle), Some(key)) =
                 (state.current_bundle.as_deref(), state.selected_key())
             {
+                if is_reserved_agent_auth_key(key) {
+                    state.error("agent auth records are managed by rage import");
+                    return Action::None;
+                }
                 let value = state.detail.get(key).cloned().unwrap_or_default();
                 state.view = View::Editor(EditorState {
                     mode: EditorMode::EditValue,
@@ -436,6 +464,10 @@ fn handle_detail_key(state: &mut AppState, key: KeyEvent) -> Action {
                 state.current_bundle.clone(),
                 state.selected_key().map(str::to_owned),
             ) {
+                if is_reserved_agent_auth_key(&key) {
+                    state.error("agent auth records are managed by rage import");
+                    return Action::None;
+                }
                 state.view = View::Confirm(ConfirmState {
                     prompt: format!("Delete key '{key}' from {bundle}? (y/n)"),
                     action: ConfirmAction::DeleteKey { bundle, key },
@@ -752,6 +784,24 @@ mod tests {
         state
     }
 
+    fn seeded_agents_state() -> AppState {
+        let mut state = AppState::new();
+        state.set_bundles(vec![AGENT_AUTH_BUNDLE.to_string()]);
+        let mut env = BTreeMap::new();
+        env.insert(
+            "AUTHLESS_CODEX_JSON".to_string(),
+            crate::AGENT_AUTH_DISPLAY_VALUE.to_string(),
+        );
+        env.insert(
+            "AUTHLESS_GROK_JSON".to_string(),
+            crate::AGENT_AUTH_DISPLAY_VALUE.to_string(),
+        );
+        env.insert("DOPPLER_TOKEN".to_string(), "dp.st.secret".to_string());
+        state.set_detail(AGENT_AUTH_BUNDLE.to_string(), env);
+        state.view = View::Detail;
+        state
+    }
+
     #[test]
     fn bundle_list_renders_names_and_selection() {
         let state = seeded_state();
@@ -807,6 +857,50 @@ mod tests {
             text.contains("sk-abcdef"),
             "value missing after reveal:\n{text}"
         );
+    }
+
+    #[test]
+    fn agents_detail_renders_imported_auth_records_as_managed_entries() {
+        let mut state = seeded_agents_state();
+        state.masked = false;
+        let buffer = render(&state, 100, 12);
+        let text = buffer_text(&buffer);
+        assert!(
+            text.contains("AUTHLESS_CODEX_JSON"),
+            "Codex auth import missing in:\n{text}"
+        );
+        assert!(
+            text.contains("AUTHLESS_GROK_JSON"),
+            "Grok auth import missing in:\n{text}"
+        );
+        assert!(
+            text.contains("DOPPLER_TOKEN"),
+            "ordinary agents bundle key missing in:\n{text}"
+        );
+        assert!(
+            text.contains(crate::AGENT_AUTH_DISPLAY_VALUE),
+            "managed auth placeholder missing in:\n{text}"
+        );
+        assert!(
+            !text.contains("access_token"),
+            "auth JSON should not be rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn agents_auth_records_cannot_be_edited_or_deleted_in_tui() {
+        let mut state = seeded_agents_state();
+        state.detail_index = 0;
+
+        let action = handle_key(&mut state, key(KeyCode::Char('e')));
+        assert_eq!(action, Action::None);
+        assert!(matches!(state.view, View::Detail));
+        assert!(state.status.as_ref().is_some_and(|s| s.is_error));
+
+        let action = handle_key(&mut state, key(KeyCode::Char('d')));
+        assert_eq!(action, Action::None);
+        assert!(matches!(state.view, View::Detail));
+        assert!(state.status.as_ref().is_some_and(|s| s.is_error));
     }
 
     #[test]

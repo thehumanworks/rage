@@ -199,12 +199,14 @@ masked by default (toggle with `m`), and supports `a`dd, `e`dit, `d`elete
 operations that go through the existing Infisical write and cache paths. It honors
 the same SSH/Keychain guard as the other commands and refuses to open when
 stdout is not a terminal.
+In the `agents` bundle, imported `AUTHLESS_*_JSON` auth records are shown as
+managed placeholders so imports are visible without rendering raw auth JSON.
 
 ## Agent Auth
 
 `rage` can import existing Grok and Codex auth files into Infisical, refresh
-them when needed, and launch the matching CLI without keeping the original auth
-cache on disk. These records are stored in the `agents` bundle as
+them when needed, and launch the matching CLI with a refreshed provider auth
+cache. These records are stored in the `agents` bundle as
 `AUTHLESS_<TOOL>_JSON` secrets and are reserved from normal
 `rage load/shell/exec` output.
 
@@ -216,7 +218,9 @@ rage grok -- -p "hello"
 ```
 
 `rage grok` refreshes the stored record when it is expired or near expiry, then
-sets only `GROK_CODE_XAI_API_KEY` for the child process.
+writes a Grok-compatible auth cache to `~/.grok/auth.json` before launching the
+child process. Pass `-e`/`--ephemeral` to avoid writing the auth cache and use
+the child-process `GROK_CODE_XAI_API_KEY` environment variable instead.
 
 Bootstrap Codex from a ChatGPT login:
 
@@ -225,10 +229,11 @@ rage import codex ~/.codex/auth.json
 rage codex
 ```
 
-`rage codex` writes a temporary Codex-compatible `auth.json` under
-`${CODEX_HOME:-$HOME/.codex}` for the child process. If the file did not exist
-before launch, it is removed on exit. Pass `--force` to temporarily overwrite an
-existing `auth.json` and restore it after the child exits.
+`rage codex` refreshes the stored record when needed, then writes a
+Codex-compatible `auth.json` under `${CODEX_HOME:-$HOME/.codex}` before
+launching the child process. Pass `-e`/`--ephemeral` to remove the managed
+`auth.json` on exit, restoring any file that existed before launch. `--force`
+is retained as a compatibility alias for the same temporary Codex behavior.
 
 Forward selected cached secrets over SSH:
 

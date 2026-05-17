@@ -15,13 +15,13 @@ Infisical -> sync/write commands -> age-encrypted local cache -> shell/exec/ssh 
 - **Identity source**: File identities by default; `rage init` can generate the file identity and derive its public recipient natively. macOS Keychain is explicit opt-in.
 - **Command runner**: `exec` and `shell` inject decrypted variables into child process environments.
 - **SSH runner**: `ssh` sends a remote shell script over stdin so secrets are not embedded in local process arguments.
-- **Agent auth runner**: `rage import grok`, `rage import codex`, `rage grok`, and `rage codex` live in `src/agent_auth.rs`. Imported agent auth records are stored in the Infisical `/agents` path as `AUTHLESS_<PROVIDER>_JSON`, refreshed through the provider OAuth endpoints when stale, and injected only into the intended child environment or managed auth file. Bundle operations reserve those keys and never sync them into shell caches, while bundle listing still shows `agents` so the TUI has a visible home for imported agent auth.
-- **TUI**: `rage tui` (module `src/tui.rs`) is a ratatui presentation layer that reuses the Infisical and cache helpers above. It validates the age identity before opening the alternate screen so the SSH-Keychain guard fires before any terminal state is touched, refuses to start when stdout is not a TTY, and never renders raw values in the masked detail view.
+- **Agent auth runner**: `rage import grok`, `rage import codex`, `rage grok`, and `rage codex` live in `src/agent_auth.rs`. Imported agent auth records are stored in the Infisical `/agents` path as `AUTHLESS_<PROVIDER>_JSON`, refreshed through the provider OAuth endpoints when stale, and written only to the matching provider auth cache or, in explicit ephemeral mode, injected only into the intended child environment/managed auth file. Bundle operations reserve those keys and never sync them into shell caches, while bundle listing still shows `agents` so the TUI has a visible home for imported agent auth.
+- **TUI**: `rage tui` (module `src/tui.rs`) is a ratatui presentation layer that reuses the Infisical and cache helpers above. It validates the age identity before opening the alternate screen so the SSH-Keychain guard fires before any terminal state is touched, refuses to start when stdout is not a TTY, never renders raw values in the masked detail view, and shows imported agent auth records as managed placeholders instead of raw auth JSON.
 
 ## Safety Invariants
 
 - Do not make network fetches part of normal shell startup unless the user passes `--sync`.
-- Do not persist plaintext dotenv payloads.
+- Do not persist plaintext dotenv payloads or agent auth anywhere except the explicit provider auth caches managed by `rage grok` and `rage codex`.
 - Do not leak secret values into process arguments.
 - Do not print raw agent access tokens, refresh tokens, or full auth JSON in status or error output.
 - Keep Keychain disabled by default for SSH-originated sessions.

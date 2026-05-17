@@ -14,6 +14,7 @@ struct TestHome {
     _tmp: TempDir,
     config_dir: PathBuf,
     cache_dir: PathBuf,
+    home_dir: PathBuf,
 }
 
 impl TestHome {
@@ -21,12 +22,15 @@ impl TestHome {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_dir = tmp.path().join("config");
         let cache_dir = tmp.path().join("cache");
+        let home_dir = tmp.path().join("home");
         fs::create_dir_all(&config_dir).expect("config dir");
         fs::create_dir_all(&cache_dir).expect("cache dir");
+        fs::create_dir_all(&home_dir).expect("home dir");
         Self {
             _tmp: tmp,
             config_dir,
             cache_dir,
+            home_dir,
         }
     }
 
@@ -51,6 +55,8 @@ impl TestHome {
             .env_remove("RAGE_INFISICAL_ENVIRONMENT")
             .env_remove("GROK_AUTH_ENDPOINT_URL")
             .env_remove("CODEX_AUTH_ENDPOINT_URL")
+            .env_remove("GROK_CODE_XAI_API_KEY")
+            .env("HOME", &self.home_dir)
             .env_remove("CODEX_HOME");
         cmd
     }
@@ -512,7 +518,7 @@ fn rage_grok_migrates_legacy_root_agent_auth_to_agents_bundle() {
     infisical.insert("/", "AUTHLESS_GROK_JSON", &auth.to_string());
     let fake = fake_agent_bin(
         "grok",
-        "#!/bin/sh\nprintf 'token=%s\\n' \"$GROK_CODE_XAI_API_KEY\"\n",
+        "#!/bin/sh\ntest -z \"${GROK_CODE_XAI_API_KEY+x}\"\ngrep -q 'access-old' \"$HOME/.grok/auth.json\"\nprintf 'cached\\n'\n",
     );
 
     infisical
@@ -535,16 +541,45 @@ fn rage_grok_migrates_legacy_root_agent_auth_to_agents_bundle() {
         .arg("grok")
         .assert()
         .success()
-        .stdout("token=access-old\n");
+        .stdout("cached\n");
 
     assert_eq!(
         infisical.get("/agents", "AUTHLESS_GROK_JSON").unwrap(),
         auth.to_string()
     );
+    assert!(home.home_dir.join(".grok/auth.json").exists());
 }
 
 #[test]
-fn rage_grok_injects_access_token_only_into_child_env() {
+fn rage_grok_writes_auth_json_by_default() {
+    let home = TestHome::new();
+    init_file_identity(&home);
+    let infisical = FakeInfisical::new();
+    import_grok_auth(
+        &home,
+        &infisical,
+        "access-old",
+        "refresh-old",
+        "2099-01-01T00:00:00.000Z",
+    );
+    let fake = fake_agent_bin(
+        "grok",
+        "#!/bin/sh\ntest -z \"${GROK_CODE_XAI_API_KEY+x}\"\ngrep -q 'access-old' \"$HOME/.grok/auth.json\"\ngrep -q 'refresh-old' \"$HOME/.grok/auth.json\"\nprintf 'args=%s\\n' \"$*\"\n",
+    );
+
+    infisical
+        .apply(&mut home.rage())
+        .env("PATH", prepend_path(&fake.bin_dir))
+        .args(["grok", "--", "-p", "hello"])
+        .assert()
+        .success()
+        .stdout("args=-p hello\n");
+
+    assert!(home.home_dir.join(".grok/auth.json").exists());
+}
+
+#[test]
+fn rage_grok_ephemeral_injects_access_token_only_into_child_env() {
     let home = TestHome::new();
     init_file_identity(&home);
     let infisical = FakeInfisical::new();
@@ -563,10 +598,12 @@ fn rage_grok_injects_access_token_only_into_child_env() {
     infisical
         .apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
-        .args(["grok", "--", "-p", "hello"])
+        .args(["grok", "-e", "--", "-p", "hello"])
         .assert()
         .success()
         .stdout("token=access-old\nargs=-p hello\nrefresh=unset\n");
+
+    assert!(!home.home_dir.join(".grok/auth.json").exists());
 }
 
 #[test]
@@ -584,7 +621,7 @@ fn rage_grok_refreshes_expired_auth_and_persists_rotation() {
     let oauth = FakeAgentOAuth::new();
     let fake = fake_agent_bin(
         "grok",
-        "#!/bin/sh\nprintf 'token=%s\\n' \"$GROK_CODE_XAI_API_KEY\"\n",
+        "#!/bin/sh\ntest -z \"${GROK_CODE_XAI_API_KEY+x}\"\ngrep -q 'access-new' \"$HOME/.grok/auth.json\"\nprintf 'refreshed\\n'\n",
     );
 
     infisical
@@ -594,7 +631,7 @@ fn rage_grok_refreshes_expired_auth_and_persists_rotation() {
         .arg("grok")
         .assert()
         .success()
-        .stdout("token=access-new\n");
+        .stdout("refreshed\n");
 
     assert_eq!(oauth.grok_calls(), 1);
 
@@ -605,13 +642,13 @@ fn rage_grok_refreshes_expired_auth_and_persists_rotation() {
         .arg("grok")
         .assert()
         .success()
-        .stdout("token=access-new\n");
+        .stdout("refreshed\n");
 
     assert_eq!(oauth.grok_calls(), 1);
 }
 
 #[test]
-fn rage_codex_writes_managed_auth_json_and_cleans_up_created_file() {
+fn rage_codex_writes_managed_auth_json_by_default() {
     let home = TestHome::new();
     init_file_identity(&home);
     let infisical = FakeInfisical::new();
@@ -643,7 +680,70 @@ fn rage_codex_writes_managed_auth_json_and_cleans_up_created_file() {
         fs::read_to_string(marker).unwrap(),
         codex_home.display().to_string()
     );
+    assert!(codex_home.join("auth.json").exists());
+}
+
+#[test]
+fn rage_codex_ephemeral_cleans_up_created_auth_json() {
+    let home = TestHome::new();
+    init_file_identity(&home);
+    let infisical = FakeInfisical::new();
+    import_codex_auth(
+        &home,
+        &infisical,
+        &future_jwt(),
+        "id-token",
+        "refresh-old",
+        None,
+    );
+    let codex_home = home._tmp.path().join("codex-ephemeral-home");
+    let fake = fake_agent_bin(
+        "codex",
+        "#!/bin/sh\ntest -f \"$CODEX_HOME/auth.json\"\ngrep -q '\"auth_mode\": \"chatgpt\"' \"$CODEX_HOME/auth.json\"\n",
+    );
+
+    infisical
+        .apply(&mut home.rage())
+        .env("PATH", prepend_path(&fake.bin_dir))
+        .env("CODEX_HOME", &codex_home)
+        .args(["codex", "-e", "run", "hello"])
+        .assert()
+        .success();
+
     assert!(!codex_home.join("auth.json").exists());
+}
+
+#[test]
+fn rage_codex_ephemeral_restores_existing_auth_json() {
+    let home = TestHome::new();
+    init_file_identity(&home);
+    let infisical = FakeInfisical::new();
+    import_codex_auth(
+        &home,
+        &infisical,
+        &future_jwt(),
+        "id-token",
+        "refresh-old",
+        None,
+    );
+    let codex_home = home._tmp.path().join("codex-existing-home");
+    let auth_path = codex_home.join("auth.json");
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(&auth_path, "existing-auth\n").unwrap();
+    let fake = fake_agent_bin(
+        "codex",
+        "#!/bin/sh\ngrep -q '\"auth_mode\": \"chatgpt\"' \"$CODEX_HOME/auth.json\"\n",
+    );
+
+    infisical
+        .apply(&mut home.rage())
+        .env("PATH", prepend_path(&fake.bin_dir))
+        .env("CODEX_HOME", &codex_home)
+        .args(["codex", "--ephemeral", "run", "hello"])
+        .assert()
+        .success();
+
+    assert_eq!(fs::read_to_string(auth_path).unwrap(), "existing-auth\n");
 }
 
 #[test]

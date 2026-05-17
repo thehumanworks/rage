@@ -24,8 +24,9 @@ const DEFAULT_SECRET_PREFIX: &str = "rage";
 const CONFIG_FILE_NAME: &str = "config.toml";
 const DEFAULT_INFISICAL_ENDPOINT: &str = "https://us.infisical.com";
 const DEFAULT_INFISICAL_ENVIRONMENT: &str = "prod";
-const AGENT_AUTH_BUNDLE: &str = "agents";
+pub(crate) const AGENT_AUTH_BUNDLE: &str = "agents";
 const AGENT_AUTH_SECRET_PATH: &str = "/agents";
+pub(crate) const AGENT_AUTH_DISPLAY_VALUE: &str = "<managed agent auth; value hidden>";
 
 #[derive(Parser)]
 #[command(name = "rage")]
@@ -740,6 +741,44 @@ pub(crate) fn remote_read_bundle(
     Ok(Some(env))
 }
 
+pub(crate) fn remote_read_bundle_for_display(
+    cfg: &Config,
+    bundle: &str,
+    allow_ssh_keychain: bool,
+) -> Result<Option<BTreeMap<String, String>>> {
+    let client = InfisicalClient::new(cfg, allow_ssh_keychain)?;
+    let secret_path = bundle_path(bundle);
+    let mut env = BTreeMap::new();
+
+    for secret in client.list_secrets(&secret_path, false, false)? {
+        if is_reserved_remote_key(&secret.secret_key) {
+            if bundle == AGENT_AUTH_BUNDLE {
+                env.insert(secret.secret_key, AGENT_AUTH_DISPLAY_VALUE.to_string());
+            }
+            continue;
+        }
+        validate_env_key(&secret.secret_key)?;
+        let value = client
+            .read_secret(&secret.secret_key, &secret_path)?
+            .unwrap_or_default();
+        env.insert(secret.secret_key, value);
+    }
+
+    if bundle == AGENT_AUTH_BUNDLE {
+        for secret in client.list_secrets("/", false, false)? {
+            if is_reserved_remote_key(&secret.secret_key) {
+                env.entry(secret.secret_key)
+                    .or_insert_with(|| AGENT_AUTH_DISPLAY_VALUE.to_string());
+            }
+        }
+    }
+
+    if env.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(env))
+}
+
 pub(crate) fn remote_write_bundle(
     cfg: &Config,
     bundle: &str,
@@ -862,6 +901,10 @@ pub(crate) fn write_remote_auth_record(cfg: &Config, provider: &str, raw: &str) 
 
 fn auth_secret_key(provider: &str) -> String {
     format!("AUTHLESS_{}_JSON", provider.to_ascii_uppercase())
+}
+
+pub(crate) fn is_reserved_agent_auth_key(key: &str) -> bool {
+    is_reserved_remote_key(key)
 }
 
 fn is_reserved_remote_key(key: &str) -> bool {
