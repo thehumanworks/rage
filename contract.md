@@ -2,7 +2,7 @@
 
 Goal: add a `rage tui` subcommand that opens an interactive terminal UI for browsing and editing the bundles already managed by `rage`, without weakening any of the project invariants in `AGENTS.md`.
 
-The TUI must be a thin presentation layer over the existing helpers in `src/main.rs` (`remote_list_bundles`, `remote_read_bundle`, `remote_write_bundle`, `remote_delete_bundle`, `sync_bundle`, `read_cache`, `write_cache`, `validate_env_key`). No new Infisical transport. No plaintext on disk. No daemon.
+The TUI must be a thin presentation layer over the existing helpers in `src/main.rs` (`remote_list_bundles`, `remote_read_bundle`, `remote_write_bundle`, `remote_delete_bundle`, `sync_bundle`, `read_cache`, `write_cache`, `validate_env_key`). No new GCP Secret Manager transport. No plaintext on disk. No daemon.
 
 A change set is "done" when every criterion below is satisfied.
 
@@ -32,15 +32,15 @@ A change set is "done" when every criterion below is satisfied.
 
 ## Out of scope (for this iteration)
 
-- Live Infisical smoke test for the TUI (`scripts/smoke-infisical.sh`).
-- Mouse support, theming, search/filter, paging through Infisical list responses inside the UI.
+- Live GCP Secret Manager smoke test for the TUI (`scripts/smoke-gcp.sh`).
+- Mouse support, theming, search/filter, paging through GCP Secret Manager list responses inside the UI.
 - A separate background thread for long-running fetches; v1 is allowed to block the UI thread during a sync with a "Syncing…" status line.
 
 # Release Distribution Verification Contract
 
 Goal: ship signed-by-tag prebuilt binaries of `rage` for the four supported host
 combinations and a smart installer script users can curl-pipe. No new runtime
-behavior, no changes to the Infisical/age invariants in `AGENTS.md`.
+behavior, no changes to the GCP Secret Manager/age invariants in `AGENTS.md`.
 
 ## Criteria
 
@@ -108,7 +108,7 @@ or any local path other than the provider auth cache the user explicitly runs.
 A1. **Import commands exist.** `rage import grok <auth-file>` converts a Grok
     OIDC auth cache into a portable auth record, and `rage import codex
     <auth-file>` converts a Codex ChatGPT auth cache. The imported records are
-    written only to Infisical root secrets named `AUTHLESS_<PROVIDER>_JSON`.
+    written only to GCP Secret Manager root secrets named `AUTHLESS_<PROVIDER>_JSON`.
 
 A2. **Grok runner is cache-scoped by default.** `rage grok [-- <args...>]`
     loads and refreshes the Grok auth record when stale, persists rotated

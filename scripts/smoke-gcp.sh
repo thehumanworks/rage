@@ -18,17 +18,15 @@ if [ -f .env ]; then
   set +a
 fi
 
-if [ -z "${INFISICAL_TOKEN:-}" ] &&
-  { [ -z "${INFISICAL_MACHINE_IDENTITY_CLIENT_ID:-}" ] ||
-    [ -z "${INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET:-}" ]; }; then
-  echo "set INFISICAL_TOKEN or INFISICAL_MACHINE_IDENTITY_CLIENT_ID and INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET" >&2
+if [ -z "${GCP_ACCESS_TOKEN:-${GOOGLE_OAUTH_ACCESS_TOKEN:-}}" ]; then
+  echo "set GCP_ACCESS_TOKEN or GOOGLE_OAUTH_ACCESS_TOKEN with Secret Manager access" >&2
   exit 2
 fi
 
 project_arg=""
-project_id="${RAGE_INFISICAL_PROJECT_ID:-${INFISICAL_PROJECT_ID:-}}"
+project_id="${RAGE_GCP_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}"
 if [ -n "$project_id" ]; then
-  project_arg="--infisical-project-id $project_id"
+  project_arg="--gcp-project $project_id"
 fi
 
 cargo build --release >/dev/null
@@ -61,7 +59,7 @@ rm -f "$RAGE_CACHE_DIR"/rage-*.env.age
 
 value="$(./target/release/rage get "$bundle" "$key")"
 [ "$value" = "ok" ] || {
-  echo "unexpected Infisical smoke value: $value" >&2
+  echo "unexpected GCP Secret Manager smoke value: $value" >&2
   exit 1
 }
 
@@ -70,4 +68,4 @@ value="$(./target/release/rage get "$bundle" "$key")"
 cleanup
 trap - EXIT
 
-echo "smoke-infisical: ok"
+echo "smoke-gcp: ok"

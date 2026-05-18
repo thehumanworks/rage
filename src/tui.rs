@@ -395,7 +395,7 @@ fn handle_bundles_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Char('D') => {
             if let Some(bundle) = state.selected_bundle().map(str::to_owned) {
                 state.view = View::Confirm(ConfirmState {
-                    prompt: format!("Delete bundle '{bundle}' from Infisical? (y/n)"),
+                    prompt: format!("Delete bundle '{bundle}' from GCP Secret Manager? (y/n)"),
                     action: ConfirmAction::DeleteBundle { bundle },
                 });
             }

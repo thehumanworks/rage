@@ -1,7 +1,7 @@
 {
   "name": "@nothumanwork/rage",
   "version": "0.1.1",
-  "description": "Fast local shell secrets backed by Infisical and age-encrypted cache.",
+  "description": "Fast local shell secrets backed by GCP Secret Manager and age-encrypted cache.",
   "license": "UNLICENSED",
   "private": false,
   "bin": {

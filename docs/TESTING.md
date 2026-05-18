@@ -9,8 +9,7 @@ scripts/verify.sh
 ```
 
 It runs `scripts/qa.sh`, `scripts/smoke-local.sh`, and
-`scripts/harness-audit.sh`. It runs live Infisical only when
-`RAGE_LIVE_INFISICAL=1` is set.
+`scripts/harness-audit.sh`. It runs live GCP only when `RAGE_LIVE_GCP=1` is set.
 
 ## QA Gate
 
@@ -37,32 +36,19 @@ Run:
 scripts/smoke-local.sh
 ```
 
-This uses a temporary config/cache and lets `rage init` create a temporary age identity. It proves:
+This uses a temporary config/cache and lets `rage init` create a temporary age identity. It proves native age identity generation, recipient derivation, cache encryption/decryption, `rage load`, `rage exec`, and SSH-gated Keychain behavior. It must not touch real GCP, real Keychain items, or persistent config.
 
-- `rage init`
-- native age identity generation, recipient derivation, cache encryption, and cache decrypt
-- `rage load`
-- `rage exec`
-- Keychain identity source remains SSH-gated unless `--allow-ssh-keychain` is passed
+## Live GCP Smoke
 
-It must not touch real Infisical, real Keychain items, or persistent config.
-
-## Live Infisical Smoke
-
-Run only when live Infisical verification is needed:
+Run only when live GCP verification is needed:
 
 ```sh
-scripts/smoke-infisical.sh
+scripts/smoke-gcp.sh
 ```
 
-The script requires either `INFISICAL_TOKEN` or
-`INFISICAL_MACHINE_IDENTITY_CLIENT_ID` plus
-`INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET`. If the identity can see multiple
-projects, set `INFISICAL_PROJECT_SLUG`, `INFISICAL_PROJECT_ID`, or
-`RAGE_INFISICAL_PROJECT_ID`. It creates a disposable root key, verifies `set ->
-sync -> get -> list`, then deletes the key and confirms cleanup.
+The script requires `GCP_ACCESS_TOKEN` or `GOOGLE_OAUTH_ACCESS_TOKEN` with Secret Manager access and a disposable project selected by `RAGE_GCP_PROJECT` or `GOOGLE_CLOUD_PROJECT`. It creates a disposable root key, verifies `set -> sync -> get -> list`, then deletes the key.
 
-Do not wire this script into default tests unless the environment is explicitly a disposable integration environment.
+Do not wire this script into default tests unless the environment is explicitly disposable.
 
 ## Harness Audit
 
@@ -78,24 +64,22 @@ This checks that the AI-facing docs, scripts, project skill, and safety phrases 
 
 See `docs/DEFINITION_OF_DONE.md` for the required evidence by change type.
 
-Integration tests under `tests/` are part of the default QA gate. Do not move
-integration-impacting coverage behind a manual flag unless it requires live
-external infrastructure; use fake services for deterministic coverage.
+Integration tests under `tests/` are part of the default QA gate. Do not move integration-impacting coverage behind a manual flag unless it requires live external infrastructure; use fake services for deterministic coverage.
 
 ## Test Coverage Map
 
 - `src/main.rs` unit tests: encoding, dotenv rendering/parsing, shell quoting, JSON escaping, merge precedence, SSH script rendering.
 - `src/agent_auth.rs` unit tests: timestamp handling and token redaction for provider refresh errors.
-- `tests/cli.rs` integration tests: native age init/encrypt/decrypt, fake Infisical round trips, fake security Keychain gate, fake SSH argument/script handling, output formats, `unset`, remote agent auth imports, fake OAuth refresh, and fake Grok/Codex child behavior.
+- `tests/cli.rs` integration tests: native age init/encrypt/decrypt, fake GCP Secret Manager round trips, fake `security` Keychain gate, fake SSH argument/script handling, output formats, `unset`, remote agent auth imports, fake OAuth refresh, and fake Grok/Codex child behavior.
 - `scripts/smoke-local.sh`: release binary local end-to-end behavior.
-- `scripts/smoke-infisical.sh`: live Infisical behavior.
+- `scripts/smoke-gcp.sh`: live GCP Secret Manager behavior.
 
 ## When To Add Tests
 
 Add or update tests whenever changing:
 
 - CLI arguments or output.
-- Infisical HTTP request/response behavior.
+- GCP Secret Manager HTTP request/response behavior.
 - agent auth import, refresh, redaction, child environment, or managed auth-file behavior.
 - cache path or encryption/decryption.
 - shell quoting or dotenv parsing.

@@ -7,7 +7,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use tempfile::TempDir;
 
 struct TestHome {
@@ -38,21 +41,14 @@ impl TestHome {
         let mut cmd = assert_cmd::Command::cargo_bin("rage").expect("rage binary");
         cmd.env("RAGE_CONFIG_DIR", &self.config_dir)
             .env("RAGE_CACHE_DIR", &self.cache_dir)
-            .env_remove("INFISICAL_TOKEN")
-            .env_remove("INFISICAL_MACHINE_IDENTITY_CLIENT_ID")
-            .env_remove("INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET")
-            .env_remove("INFISICAL_UNIVERSAL_AUTH_CLIENT_ID")
-            .env_remove("INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET")
-            .env_remove("INFISICAL_ORGANIZATION_SLUG")
-            .env_remove("INFISICAL_ORG_SLUG")
-            .env_remove("INFISICAL_PROJECT_ID")
-            .env_remove("INFISICAL_PROJECT_SLUG")
-            .env_remove("INFISICAL_ENVIRONMENT")
-            .env_remove("INFISICAL_API_URL")
-            .env_remove("RAGE_INFISICAL_ENDPOINT")
-            .env_remove("RAGE_INFISICAL_PROJECT_ID")
-            .env_remove("RAGE_INFISICAL_PROJECT_SLUG")
-            .env_remove("RAGE_INFISICAL_ENVIRONMENT")
+            .env_remove("GCP_ACCESS_TOKEN")
+            .env_remove("GOOGLE_OAUTH_ACCESS_TOKEN")
+            .env_remove("CLOUDSDK_AUTH_ACCESS_TOKEN")
+            .env_remove("RAGE_GCP_ENDPOINT")
+            .env_remove("RAGE_GCP_PROJECT")
+            .env_remove("GOOGLE_CLOUD_PROJECT")
+            .env_remove("GOOGLE_PROJECT_ID")
+            .env_remove("GCLOUD_PROJECT")
             .env_remove("GROK_AUTH_ENDPOINT_URL")
             .env_remove("CODEX_AUTH_ENDPOINT_URL")
             .env_remove("GROK_CODE_XAI_API_KEY")
@@ -70,7 +66,7 @@ fn init_generates_file_identity_and_recipient_by_default() {
     home.rage()
         .args([
             "init",
-            "--infisical-project-id",
+            "--gcp-project",
             "test-project",
             "--age-identity",
             identity_path.to_str().unwrap(),
@@ -79,8 +75,7 @@ fn init_generates_file_identity_and_recipient_by_default() {
         .success();
 
     let config = fs::read_to_string(home.config_dir.join("rage/config.toml")).unwrap();
-    assert!(config.contains("infisical_project_id = \"test-project\""));
-    assert!(config.contains("infisical_environment = \"prod\""));
+    assert!(config.contains("gcp_project = \"test-project\""));
     assert!(config.contains("age_identity_source = \"file\""));
     assert!(config.contains("age_recipient = \"age1"));
     assert!(config.contains("secret_prefix = \"rage\""));
@@ -92,32 +87,38 @@ fn init_generates_file_identity_and_recipient_by_default() {
 }
 
 #[test]
-fn init_can_infer_infisical_project_id_from_token_metadata() {
+fn init_can_read_gcp_project_from_environment() {
     let home = TestHome::new();
-    let fake = FakeInfisical::new();
     let identity_path = home.config_dir.join("rage/key.txt");
 
-    fake.apply(&mut home.rage())
+    home.rage()
+        .env("RAGE_GCP_PROJECT", "test-project")
         .args(["init", "--age-identity", identity_path.to_str().unwrap()])
         .assert()
         .success();
 
     let config = fs::read_to_string(home.config_dir.join("rage/config.toml")).unwrap();
-    assert!(config.contains("infisical_project_id = \"test-project\""));
+    assert!(config.contains("gcp_project = \"test-project\""));
 }
 
 #[test]
-fn init_uses_machine_identity_credentials_and_infers_single_project() {
+fn init_uses_gcp_access_token_for_remote_commands() {
     let home = TestHome::new();
-    let fake = FakeInfisical::new();
+    let fake = FakeGcp::new();
     let identity_path = home.config_dir.join("rage/key.txt");
 
-    fake.apply_machine_identity(&mut home.rage())
-        .args(["init", "--age-identity", identity_path.to_str().unwrap()])
+    fake.apply(&mut home.rage())
+        .args([
+            "init",
+            "--gcp-project",
+            "test-project",
+            "--age-identity",
+            identity_path.to_str().unwrap(),
+        ])
         .assert()
         .success();
 
-    fake.apply_machine_identity(&mut home.rage())
+    fake.apply(&mut home.rage())
         .args(["set", "global", "A", "one"])
         .assert()
         .success()
@@ -125,7 +126,7 @@ fn init_uses_machine_identity_credentials_and_infers_single_project() {
 }
 
 #[test]
-fn legacy_gcp_config_migrates_to_inferred_infisical_project_id() {
+fn legacy_gcp_config_migrates_to_gcp_project() {
     let home = TestHome::new();
     let identity_path = init_file_identity(&home);
     let recipient = config_value(&home, "age_recipient");
@@ -146,9 +147,8 @@ cache_dir = "{}"
     )
     .unwrap();
 
-    let fake = FakeInfisical::new();
-    let stdout = fake
-        .apply_machine_identity(&mut home.rage())
+    let stdout = home
+        .rage()
         .arg("config")
         .assert()
         .success()
@@ -156,12 +156,12 @@ cache_dir = "{}"
         .stdout
         .clone();
     let stdout = String::from_utf8(stdout).unwrap();
-    assert!(stdout.contains("infisical_project_id = \"test-project\""));
-    assert!(!stdout.contains("gcp_project"));
+    assert!(stdout.contains("gcp_project = \"humanlabs\""));
+    assert!(!stdout.contains("gcp_project_id"));
 
     let migrated = fs::read_to_string(config_path).unwrap();
-    assert!(migrated.contains("infisical_project_id = \"test-project\""));
-    assert!(!migrated.contains("gcp_project"));
+    assert!(migrated.contains("gcp_project = \"humanlabs\""));
+    assert!(!migrated.contains("gcp_project_id"));
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn keychain_init_requires_service_name() {
     home.rage()
         .args([
             "init",
-            "--infisical-project-id",
+            "--gcp-project",
             "test-project",
             "--age-recipient",
             "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3zyg3z",
@@ -265,7 +265,7 @@ fn keychain_init_requires_service_name() {
 }
 
 #[test]
-fn auth_status_reports_infisical_token_env() {
+fn auth_status_reports_gcp_token_env() {
     let home = TestHome::new();
     init_file_identity(&home);
 
@@ -276,25 +276,25 @@ fn auth_status_reports_infisical_token_env() {
         .stdout("auth: not-configured\n");
 
     home.rage()
-        .env("INFISICAL_TOKEN", "fake-token")
+        .env("GCP_ACCESS_TOKEN", "fake-token")
         .args(["auth", "status"])
         .assert()
         .success()
-        .stdout("auth: infisical-token-env\n");
+        .stdout("auth: gcp-access-token-env\n");
 
-    let fake = FakeInfisical::new();
-    fake.apply_machine_identity(&mut home.rage())
+    let fake = FakeGcp::new();
+    fake.apply(&mut home.rage())
         .args(["auth", "status"])
         .assert()
         .success()
-        .stdout("auth: infisical-token-env\n");
+        .stdout("auth: gcp-access-token-env\n");
 }
 
 #[test]
-fn set_sync_get_and_list_round_trip_through_fake_infisical() {
+fn set_sync_get_and_list_round_trip_through_fake_gcp() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let fake = FakeInfisical::new();
+    let fake = FakeGcp::new();
 
     fake.apply(&mut home.rage())
         .args(["set", "project/foo/dev", "DATABASE_URL", "postgres://db"])
@@ -327,7 +327,7 @@ fn set_sync_get_and_list_round_trip_through_fake_infisical() {
 fn list_shows_agents_bundle_when_agent_auth_is_imported() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let fake = FakeInfisical::new();
+    let fake = FakeGcp::new();
     fake.insert("/agents", "AUTHLESS_GROK_JSON", "agent-auth-json");
 
     fake.apply(&mut home.rage())
@@ -341,7 +341,7 @@ fn list_shows_agents_bundle_when_agent_auth_is_imported() {
 fn load_sync_fetches_missing_cache_and_output_formats_are_stable() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let fake = FakeInfisical::new();
+    let fake = FakeGcp::new();
     fake.insert("/", "A", "one");
     fake.insert("/", "B", "two words");
 
@@ -362,7 +362,7 @@ fn load_sync_fetches_missing_cache_and_output_formats_are_stable() {
 fn unset_removes_key_remotely_and_from_local_cache() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let fake = FakeInfisical::new();
+    let fake = FakeGcp::new();
     fake.insert("/", "A", "one");
     fake.insert("/", "B", "two");
     fake.insert("/", "AUTHLESS_GROK_JSON", "agent-auth-json");
@@ -388,10 +388,31 @@ fn unset_removes_key_remotely_and_from_local_cache() {
 }
 
 #[test]
+fn delete_bundle_preserves_reserved_agent_auth_records() {
+    let home = TestHome::new();
+    init_file_identity(&home);
+    let fake = FakeGcp::new();
+    fake.insert("/", "A", "one");
+    fake.insert("/", "AUTHLESS_GROK_JSON", "agent-auth-json");
+
+    fake.apply(&mut home.rage())
+        .args(["delete-bundle", "global", "--yes"])
+        .assert()
+        .success()
+        .stdout("deleted global\n");
+
+    assert_eq!(fake.get("/", "A"), None);
+    assert_eq!(
+        fake.get("/", "AUTHLESS_GROK_JSON").unwrap(),
+        "agent-auth-json"
+    );
+}
+
+#[test]
 fn bundle_commands_reject_reserved_agent_auth_keys() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let fake = FakeInfisical::new();
+    let fake = FakeGcp::new();
 
     fake.apply(&mut home.rage())
         .args(["set", "global", "AUTHLESS_GROK_JSON", "value"])
@@ -407,7 +428,7 @@ fn sourced_load_hook_unsets_key_from_current_shell() {
     let home = TestHome::new();
     init_file_identity(&home);
     seed_cache(&home, "global", "A=one\nB=two\n");
-    let fake = FakeInfisical::new();
+    let fake = FakeGcp::new();
     fake.insert("/", "A", "one");
     fake.insert("/", "B", "two");
     let rage_bin = assert_cmd::cargo::cargo_bin("rage");
@@ -415,8 +436,9 @@ fn sourced_load_hook_unsets_key_from_current_shell() {
     assert_cmd::Command::new("/bin/sh")
         .env("RAGE_CONFIG_DIR", &home.config_dir)
         .env("RAGE_CACHE_DIR", &home.cache_dir)
-        .env("RAGE_INFISICAL_ENDPOINT", &fake.endpoint)
-        .env("INFISICAL_TOKEN", "fake-token")
+        .env("RAGE_GCP_ENDPOINT", &fake.endpoint)
+        .env("RAGE_GCP_PROJECT", "test-project")
+        .env("GCP_ACCESS_TOKEN", "fake-token")
         .arg("-c")
         .arg(format!(
             r#"set -eu
@@ -467,10 +489,10 @@ fn ssh_sends_exports_over_stdin_without_putting_secret_in_arguments() {
 }
 
 #[test]
-fn import_grok_writes_agent_auth_to_infisical() {
+fn import_grok_writes_agent_auth_to_gcp() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let fake = FakeInfisical::new();
+    let fake = FakeGcp::new();
     let auth_path = home._tmp.path().join("grok-auth.json");
     fs::write(
         &auth_path,
@@ -506,7 +528,7 @@ fn import_grok_writes_agent_auth_to_infisical() {
 fn rage_grok_migrates_legacy_root_agent_auth_to_agents_bundle() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let infisical = FakeInfisical::new();
+    let gcp = FakeGcp::new();
     let auth = serde_json::json!({
         "client_id": "b1a00492-073a-47ea-816f-4c329264a828",
         "issuer": "https://auth.x.ai",
@@ -515,28 +537,25 @@ fn rage_grok_migrates_legacy_root_agent_auth_to_agents_bundle() {
         "expires_at": "2099-01-01T00:00:00.000Z",
         "token_type": "Bearer",
     });
-    infisical.insert("/", "AUTHLESS_GROK_JSON", &auth.to_string());
+    gcp.insert("/", "AUTHLESS_GROK_JSON", &auth.to_string());
     let fake = fake_agent_bin(
         "grok",
         "#!/bin/sh\ntest -z \"${GROK_CODE_XAI_API_KEY+x}\"\ngrep -q 'access-old' \"$HOME/.grok/auth.json\"\nprintf 'cached\\n'\n",
     );
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .arg("list")
         .assert()
         .success()
         .stdout("agents\n");
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .args(["sync", "agents"])
         .assert()
         .success()
         .stdout("synced agents\n");
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .arg("grok")
         .assert()
@@ -544,7 +563,7 @@ fn rage_grok_migrates_legacy_root_agent_auth_to_agents_bundle() {
         .stdout("cached\n");
 
     assert_eq!(
-        infisical.get("/agents", "AUTHLESS_GROK_JSON").unwrap(),
+        gcp.get("/agents", "AUTHLESS_GROK_JSON").unwrap(),
         auth.to_string()
     );
     assert!(home.home_dir.join(".grok/auth.json").exists());
@@ -554,10 +573,10 @@ fn rage_grok_migrates_legacy_root_agent_auth_to_agents_bundle() {
 fn rage_grok_writes_auth_json_by_default() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let infisical = FakeInfisical::new();
+    let gcp = FakeGcp::new();
     import_grok_auth(
         &home,
-        &infisical,
+        &gcp,
         "access-old",
         "refresh-old",
         "2099-01-01T00:00:00.000Z",
@@ -567,8 +586,7 @@ fn rage_grok_writes_auth_json_by_default() {
         "#!/bin/sh\ntest -z \"${GROK_CODE_XAI_API_KEY+x}\"\ngrep -q 'access-old' \"$HOME/.grok/auth.json\"\ngrep -q 'refresh-old' \"$HOME/.grok/auth.json\"\nprintf 'args=%s\\n' \"$*\"\n",
     );
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .args(["grok", "--", "-p", "hello"])
         .assert()
@@ -582,10 +600,10 @@ fn rage_grok_writes_auth_json_by_default() {
 fn rage_grok_ephemeral_injects_access_token_only_into_child_env() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let infisical = FakeInfisical::new();
+    let gcp = FakeGcp::new();
     import_grok_auth(
         &home,
-        &infisical,
+        &gcp,
         "access-old",
         "refresh-old",
         "2099-01-01T00:00:00.000Z",
@@ -595,8 +613,7 @@ fn rage_grok_ephemeral_injects_access_token_only_into_child_env() {
         "#!/bin/sh\nprintf 'token=%s\\nargs=%s\\nrefresh=%s\\n' \"$GROK_CODE_XAI_API_KEY\" \"$*\" \"${refresh_token-unset}\"\n",
     );
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .args(["grok", "-e", "--", "-p", "hello"])
         .assert()
@@ -610,10 +627,10 @@ fn rage_grok_ephemeral_injects_access_token_only_into_child_env() {
 fn rage_grok_refreshes_expired_auth_and_persists_rotation() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let infisical = FakeInfisical::new();
+    let gcp = FakeGcp::new();
     import_grok_auth(
         &home,
-        &infisical,
+        &gcp,
         "access-old",
         "refresh-old",
         "2000-01-01T00:00:00.000Z",
@@ -624,8 +641,7 @@ fn rage_grok_refreshes_expired_auth_and_persists_rotation() {
         "#!/bin/sh\ntest -z \"${GROK_CODE_XAI_API_KEY+x}\"\ngrep -q 'access-new' \"$HOME/.grok/auth.json\"\nprintf 'refreshed\\n'\n",
     );
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .env("GROK_AUTH_ENDPOINT_URL", oauth.grok_endpoint())
         .arg("grok")
@@ -635,8 +651,7 @@ fn rage_grok_refreshes_expired_auth_and_persists_rotation() {
 
     assert_eq!(oauth.grok_calls(), 1);
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .env("GROK_AUTH_ENDPOINT_URL", oauth.grok_endpoint())
         .arg("grok")
@@ -651,15 +666,8 @@ fn rage_grok_refreshes_expired_auth_and_persists_rotation() {
 fn rage_codex_writes_managed_auth_json_by_default() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let infisical = FakeInfisical::new();
-    import_codex_auth(
-        &home,
-        &infisical,
-        &future_jwt(),
-        "id-token",
-        "refresh-old",
-        None,
-    );
+    let gcp = FakeGcp::new();
+    import_codex_auth(&home, &gcp, &future_jwt(), "id-token", "refresh-old", None);
     let codex_home = home._tmp.path().join("codex-home");
     let marker = home._tmp.path().join("codex-marker");
     let fake = fake_agent_bin(
@@ -667,8 +675,7 @@ fn rage_codex_writes_managed_auth_json_by_default() {
         "#!/bin/sh\ntest -f \"$CODEX_HOME/auth.json\"\ngrep -q '\"auth_mode\": \"chatgpt\"' \"$CODEX_HOME/auth.json\"\nprintf '%s' \"$CODEX_HOME\" > \"$TEST_CODEX_MARKER\"\n",
     );
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .env("CODEX_HOME", &codex_home)
         .env("TEST_CODEX_MARKER", &marker)
@@ -687,23 +694,15 @@ fn rage_codex_writes_managed_auth_json_by_default() {
 fn rage_codex_ephemeral_cleans_up_created_auth_json() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let infisical = FakeInfisical::new();
-    import_codex_auth(
-        &home,
-        &infisical,
-        &future_jwt(),
-        "id-token",
-        "refresh-old",
-        None,
-    );
+    let gcp = FakeGcp::new();
+    import_codex_auth(&home, &gcp, &future_jwt(), "id-token", "refresh-old", None);
     let codex_home = home._tmp.path().join("codex-ephemeral-home");
     let fake = fake_agent_bin(
         "codex",
         "#!/bin/sh\ntest -f \"$CODEX_HOME/auth.json\"\ngrep -q '\"auth_mode\": \"chatgpt\"' \"$CODEX_HOME/auth.json\"\n",
     );
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .env("CODEX_HOME", &codex_home)
         .args(["codex", "-e", "run", "hello"])
@@ -717,15 +716,8 @@ fn rage_codex_ephemeral_cleans_up_created_auth_json() {
 fn rage_codex_ephemeral_restores_existing_auth_json() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let infisical = FakeInfisical::new();
-    import_codex_auth(
-        &home,
-        &infisical,
-        &future_jwt(),
-        "id-token",
-        "refresh-old",
-        None,
-    );
+    let gcp = FakeGcp::new();
+    import_codex_auth(&home, &gcp, &future_jwt(), "id-token", "refresh-old", None);
     let codex_home = home._tmp.path().join("codex-existing-home");
     let auth_path = codex_home.join("auth.json");
     fs::create_dir_all(&codex_home).unwrap();
@@ -735,8 +727,7 @@ fn rage_codex_ephemeral_restores_existing_auth_json() {
         "#!/bin/sh\ngrep -q '\"auth_mode\": \"chatgpt\"' \"$CODEX_HOME/auth.json\"\n",
     );
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .env("CODEX_HOME", &codex_home)
         .args(["codex", "--ephemeral", "run", "hello"])
@@ -750,10 +741,10 @@ fn rage_codex_ephemeral_restores_existing_auth_json() {
 fn rage_codex_refreshes_expired_auth_and_persists_rotation() {
     let home = TestHome::new();
     init_file_identity(&home);
-    let infisical = FakeInfisical::new();
+    let gcp = FakeGcp::new();
     import_codex_auth(
         &home,
-        &infisical,
+        &gcp,
         &jwt_with_exp(946_684_800),
         "id-token-old",
         "refresh-old",
@@ -766,8 +757,7 @@ fn rage_codex_refreshes_expired_auth_and_persists_rotation() {
         "#!/bin/sh\ngrep -q 'refresh-new' \"$CODEX_HOME/auth.json\"\ngrep -q 'id-token-new' \"$CODEX_HOME/auth.json\"\n",
     );
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .env("CODEX_HOME", &codex_home)
         .env("CODEX_AUTH_ENDPOINT_URL", oauth.codex_endpoint())
@@ -777,8 +767,7 @@ fn rage_codex_refreshes_expired_auth_and_persists_rotation() {
 
     assert_eq!(oauth.codex_calls(), 1);
 
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .env("PATH", prepend_path(&fake.bin_dir))
         .env("CODEX_HOME", &codex_home)
         .env("CODEX_AUTH_ENDPOINT_URL", oauth.codex_endpoint())
@@ -794,7 +783,7 @@ fn init_file_identity(home: &TestHome) -> PathBuf {
     home.rage()
         .args([
             "init",
-            "--infisical-project-id",
+            "--gcp-project",
             "test-project",
             "--age-identity",
             identity_path.to_str().unwrap(),
@@ -808,7 +797,7 @@ fn init_keychain_identity(home: &TestHome, recipient: &str) {
     home.rage()
         .args([
             "init",
-            "--infisical-project-id",
+            "--gcp-project",
             "test-project",
             "--age-recipient",
             recipient,
@@ -826,7 +815,7 @@ fn init_keychain_identity(home: &TestHome, recipient: &str) {
 }
 
 fn seed_cache(home: &TestHome, bundle: &str, payload: &str) {
-    let fake = FakeInfisical::new();
+    let fake = FakeGcp::new();
     let secret_path = if bundle == "global" {
         "/".to_string()
     } else {
@@ -853,13 +842,7 @@ fn config_value(home: &TestHome, key: &str) -> String {
         .unwrap_or_else(|| panic!("missing config key {key}"))
 }
 
-fn import_grok_auth(
-    home: &TestHome,
-    infisical: &FakeInfisical,
-    access: &str,
-    refresh: &str,
-    expires_at: &str,
-) {
+fn import_grok_auth(home: &TestHome, gcp: &FakeGcp, access: &str, refresh: &str, expires_at: &str) {
     let auth_path = home._tmp.path().join(format!("grok-auth-{access}.json"));
     fs::write(
         &auth_path,
@@ -872,8 +855,7 @@ fn import_grok_auth(
         ),
     )
     .unwrap();
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .args(["import", "grok", auth_path.to_str().unwrap()])
         .assert()
         .success();
@@ -881,7 +863,7 @@ fn import_grok_auth(
 
 fn import_codex_auth(
     home: &TestHome,
-    infisical: &FakeInfisical,
+    gcp: &FakeGcp,
     access_token: &str,
     id_token: &str,
     refresh_token: &str,
@@ -907,8 +889,7 @@ fn import_codex_auth(
         .to_string(),
     )
     .unwrap();
-    infisical
-        .apply(&mut home.rage())
+    gcp.apply(&mut home.rage())
         .args(["import", "codex", auth_path.to_str().unwrap()])
         .assert()
         .success();
@@ -1052,12 +1033,12 @@ fn fake_security_bin(identity_path: &Path) -> FakeSecurity {
     FakeSecurity { _tmp: tmp, bin_dir }
 }
 
-struct FakeInfisical {
+struct FakeGcp {
     endpoint: String,
     store: Arc<Mutex<BTreeMap<(String, String), String>>>,
 }
 
-impl FakeInfisical {
+impl FakeGcp {
     fn new() -> Self {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", server.server_addr());
@@ -1070,7 +1051,7 @@ impl FakeInfisical {
                 let path = url.split('?').next().unwrap_or(&url).to_string();
                 let mut body = String::new();
                 request.as_reader().read_to_string(&mut body).unwrap();
-                let response = handle_infisical_request(&thread_store, &method, &path, &url, &body);
+                let response = handle_gcp_request(&thread_store, &method, &path, &url, &body);
                 request.respond(response).unwrap();
             }
         });
@@ -1078,17 +1059,9 @@ impl FakeInfisical {
     }
 
     fn apply<'a>(&self, cmd: &'a mut assert_cmd::Command) -> &'a mut assert_cmd::Command {
-        cmd.env("RAGE_INFISICAL_ENDPOINT", &self.endpoint)
-            .env("INFISICAL_TOKEN", "fake-token")
-    }
-
-    fn apply_machine_identity<'a>(
-        &self,
-        cmd: &'a mut assert_cmd::Command,
-    ) -> &'a mut assert_cmd::Command {
-        cmd.env("RAGE_INFISICAL_ENDPOINT", &self.endpoint)
-            .env("INFISICAL_MACHINE_IDENTITY_CLIENT_ID", "client-id")
-            .env("INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET", "client-secret")
+        cmd.env("RAGE_GCP_ENDPOINT", &self.endpoint)
+            .env("RAGE_GCP_PROJECT", "test-project")
+            .env("GCP_ACCESS_TOKEN", "fake-token")
     }
 
     fn insert(&self, secret_path: &str, key: &str, value: &str) {
@@ -1107,145 +1080,138 @@ impl FakeInfisical {
     }
 }
 
-fn handle_infisical_request(
+fn handle_gcp_request(
     store: &Arc<Mutex<BTreeMap<(String, String), String>>>,
     method: &str,
     path: &str,
     url: &str,
     body: &str,
 ) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
-    if method == "GET" && path == "/api/v2/service-token" {
-        return json_response(
-            200,
-            serde_json::json!({
-                "serviceToken": {
-                    "projectId": "test-project",
-                    "scopes": [{ "secretPath": "/", "environment": "prod" }]
-                }
-            }),
-        );
-    }
-
-    if method == "POST" && path == "/api/v1/auth/universal-auth/login" {
-        let value: serde_json::Value = serde_json::from_str(body).unwrap();
-        assert_eq!(value["clientId"], "client-id");
-        assert_eq!(value["clientSecret"], "client-secret");
-        return json_response(
-            200,
-            serde_json::json!({
-                "accessToken": "machine-token",
-                "expiresIn": 3600,
-                "accessTokenMaxTTL": 3600,
-                "tokenType": "Bearer"
-            }),
-        );
-    }
-
-    if method == "GET" && path == "/api/v1/projects" {
-        return json_response(
-            200,
-            serde_json::json!({
-                "projects": [{
-                    "id": "test-project",
-                    "name": "authless",
-                    "slug": "authless"
-                }]
-            }),
-        );
-    }
-
-    if method == "POST" && path == "/api/v2/folders" {
-        let value: serde_json::Value = serde_json::from_str(body).unwrap();
-        return json_response(
-            200,
-            serde_json::json!({
-                "folder": {
-                    "name": value["name"].as_str().unwrap_or(""),
-                    "path": value["path"].as_str().unwrap_or("/")
-                }
-            }),
-        );
-    }
-
-    if method == "GET" && path == "/api/v4/secrets" {
-        let query = parse_query(url);
-        let secret_path = normalize_test_path(query.get("secretPath").map_or("/", String::as_str));
-        let recursive = query.get("recursive").is_some_and(|value| value == "true");
-        let view = query
-            .get("viewSecretValue")
-            .is_none_or(|value| value == "true");
-        let secrets: Vec<_> = store
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|((path, _), _)| {
-                if recursive {
-                    path == &secret_path
-                        || secret_path == "/"
-                        || path.starts_with(&format!("{secret_path}/"))
-                } else {
-                    path == &secret_path
-                }
-            })
-            .map(|((path, key), value)| {
-                serde_json::json!({
-                    "secretKey": key,
-                    "secretValue": if view { value.as_str() } else { "" },
-                    "secretPath": path
+    let project_secrets_path = "/v1/projects/test-project/secrets";
+    if path == project_secrets_path {
+        if method == "GET" {
+            let mut secret_ids: Vec<_> = store
+                .lock()
+                .unwrap()
+                .keys()
+                .map(|(path, _)| test_secret_id_from_path(path))
+                .collect();
+            secret_ids.sort();
+            secret_ids.dedup();
+            let secrets: Vec<_> = secret_ids
+                .into_iter()
+                .map(|secret_id| {
+                    serde_json::json!({
+                        "name": format!("projects/test-project/secrets/{secret_id}")
+                    })
                 })
-            })
-            .collect();
-        return json_response(200, serde_json::json!({ "secrets": secrets }));
-    }
-
-    let Some(encoded_key) = path.strip_prefix("/api/v4/secrets/") else {
-        return json_response(404, serde_json::json!({ "error": "not found" }));
-    };
-    let key = url_decode(encoded_key);
-
-    if method == "GET" {
-        let query = parse_query(url);
-        let secret_path = normalize_test_path(query.get("secretPath").map_or("/", String::as_str));
-        if let Some(value) = store
-            .lock()
-            .unwrap()
-            .get(&(secret_path.clone(), key.clone()))
-            .cloned()
-        {
+                .collect();
+            return json_response(200, serde_json::json!({ "secrets": secrets }));
+        }
+        if method == "POST" {
+            let query = parse_query(url);
+            let secret_id = query.get("secretId").cloned().unwrap_or_default();
             return json_response(
                 200,
                 serde_json::json!({
-                    "secret": { "secretKey": key, "secretValue": value, "secretPath": secret_path }
+                    "name": format!("projects/test-project/secrets/{secret_id}")
                 }),
             );
         }
-        return json_response(404, serde_json::json!({ "error": "not found" }));
     }
 
-    if method == "POST" || method == "PATCH" {
-        let value: serde_json::Value = serde_json::from_str(body).unwrap();
-        let secret_path = normalize_test_path(value["secretPath"].as_str().unwrap_or("/"));
-        let secret_value = value["secretValue"].as_str().unwrap_or("").to_string();
-        store
+    let Some(rest) = path.strip_prefix("/v1/projects/test-project/secrets/") else {
+        return json_response(404, serde_json::json!({ "error": "not found" }));
+    };
+
+    if let Some(encoded_secret_id) = rest.strip_suffix("/versions/latest:access") {
+        let secret_id = url_decode(encoded_secret_id);
+        let secret_path = test_path_from_secret_id(&secret_id);
+        let env: BTreeMap<_, _> = store
             .lock()
             .unwrap()
-            .insert((secret_path.clone(), key.clone()), secret_value.clone());
-        return json_response(
-            200,
-            serde_json::json!({
-                "secret": { "secretKey": key, "secretValue": secret_value, "secretPath": secret_path }
-            }),
-        );
+            .iter()
+            .filter(|((path, _), _)| path == &secret_path)
+            .map(|((_, key), value)| (key.clone(), value.clone()))
+            .collect();
+        if env.is_empty() {
+            return json_response(404, serde_json::json!({ "error": "not found" }));
+        }
+        let payload = STANDARD.encode(render_test_dotenv(&env).as_bytes());
+        return json_response(200, serde_json::json!({ "payload": { "data": payload } }));
+    }
+
+    if let Some(encoded_secret_id) = rest.strip_suffix(":addVersion") {
+        let secret_id = url_decode(encoded_secret_id);
+        let secret_path = test_path_from_secret_id(&secret_id);
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        let payload = value["payload"]["data"].as_str().unwrap_or("");
+        let decoded = STANDARD.decode(payload.as_bytes()).unwrap();
+        let env = parse_test_dotenv(&String::from_utf8(decoded).unwrap());
+        let mut locked = store.lock().unwrap();
+        locked.retain(|(path, _), _| path != &secret_path);
+        for (key, value) in env {
+            locked.insert((secret_path.clone(), key), value);
+        }
+        return json_response(200, serde_json::json!({ "name": "version" }));
     }
 
     if method == "DELETE" {
-        let value: serde_json::Value = serde_json::from_str(body).unwrap();
-        let secret_path = normalize_test_path(value["secretPath"].as_str().unwrap_or("/"));
-        store.lock().unwrap().remove(&(secret_path, key));
+        let secret_id = url_decode(rest);
+        let secret_path = test_path_from_secret_id(&secret_id);
+        store
+            .lock()
+            .unwrap()
+            .retain(|(path, _), _| path != &secret_path);
         return json_response(200, serde_json::json!({}));
     }
 
     json_response(404, serde_json::json!({ "error": "not found" }))
+}
+
+fn test_secret_id_from_path(path: &str) -> String {
+    let bundle = if path == "/" {
+        "global".to_string()
+    } else {
+        path.trim_matches('/').to_string()
+    };
+    format!("rage-{}", URL_SAFE_NO_PAD.encode(bundle.as_bytes()))
+}
+
+fn test_path_from_secret_id(secret_id: &str) -> String {
+    let encoded = secret_id.strip_prefix("rage-").unwrap_or(secret_id);
+    let bundle = String::from_utf8(URL_SAFE_NO_PAD.decode(encoded.as_bytes()).unwrap()).unwrap();
+    if bundle == "global" {
+        "/".to_string()
+    } else {
+        format!("/{}", bundle.trim_matches('/'))
+    }
+}
+
+fn render_test_dotenv(env: &BTreeMap<String, String>) -> String {
+    let mut out = String::new();
+    for (key, value) in env {
+        out.push_str(key);
+        out.push('=');
+        if value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '@'))
+        {
+            out.push_str(value);
+        } else {
+            out.push('"');
+            out.push_str(&value.replace('\\', "\\\\").replace('"', "\\\""));
+            out.push('"');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn parse_test_dotenv(raw: &str) -> BTreeMap<String, String> {
+    dotenvy::from_read_iter(raw.as_bytes())
+        .map(|item| item.unwrap())
+        .collect()
 }
 
 fn normalize_test_path(path: &str) -> String {

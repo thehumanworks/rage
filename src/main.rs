@@ -15,15 +15,17 @@ mod tui;
 
 use age::secrecy::ExposeSecret;
 use anyhow::{Context, Result, anyhow, bail};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_SECRET_PREFIX: &str = "rage";
 const CONFIG_FILE_NAME: &str = "config.toml";
-const DEFAULT_INFISICAL_ENDPOINT: &str = "https://us.infisical.com";
-const DEFAULT_INFISICAL_ENVIRONMENT: &str = "prod";
+const DEFAULT_GCP_ENDPOINT: &str = "https://secretmanager.googleapis.com";
 pub(crate) const AGENT_AUTH_BUNDLE: &str = "agents";
 const AGENT_AUTH_SECRET_PATH: &str = "/agents";
 pub(crate) const AGENT_AUTH_DISPLAY_VALUE: &str = "<managed agent auth; value hidden>";
@@ -31,7 +33,7 @@ pub(crate) const AGENT_AUTH_DISPLAY_VALUE: &str = "<managed agent auth; value hi
 #[derive(Parser)]
 #[command(name = "rage")]
 #[command(version)]
-#[command(about = "Fast local shell secrets backed by Infisical and age-encrypted cache")]
+#[command(about = "Fast local shell secrets backed by GCP Secret Manager and age-encrypted cache")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -41,13 +43,13 @@ struct Cli {
 enum Commands {
     /// Create or update ~/.config/rage/config.toml.
     Init(InitArgs),
-    /// Show Infisical authentication status.
+    /// Show GCP authentication status.
     Auth(AuthArgs),
     /// Import agent auth records into encrypted rage storage.
     Import(agent_auth::ImportArgs),
     /// Print the active configuration.
     Config,
-    /// List remote rage bundles in Infisical.
+    /// List remote rage bundles in GCP Secret Manager.
     List(ListArgs),
     /// Set a KEY=VALUE in a remote bundle and update the encrypted local cache.
     Set(SetArgs),
@@ -90,21 +92,21 @@ struct AuthArgs {
 
 #[derive(Subcommand)]
 enum AuthCommand {
-    /// Show whether rage can see an Infisical token.
+    /// Show whether rage can see a GCP access token.
     Status,
 }
 
 #[derive(Args)]
 struct InitArgs {
-    /// Infisical project ID. If omitted, rage infers it from INFISICAL_TOKEN.
+    /// GCP project ID. If omitted, rage reads RAGE_GCP_PROJECT or GOOGLE_CLOUD_PROJECT.
     #[arg(long)]
+    gcp_project: Option<String>,
+    /// Legacy alias accepted while migrating back from the Infisical-backed config.
+    #[arg(long, hide = true)]
     infisical_project_id: Option<String>,
-    /// Infisical environment slug.
-    #[arg(long, default_value = DEFAULT_INFISICAL_ENVIRONMENT)]
-    infisical_environment: String,
-    /// Infisical API endpoint.
-    #[arg(long, default_value = DEFAULT_INFISICAL_ENDPOINT)]
-    infisical_endpoint: String,
+    /// GCP Secret Manager API endpoint.
+    #[arg(long, default_value = DEFAULT_GCP_ENDPOINT)]
+    gcp_endpoint: String,
     /// age recipient used to encrypt the local cache. For file identities this is derived automatically.
     #[arg(long)]
     age_recipient: Option<String>,
@@ -160,7 +162,7 @@ struct ListArgs {
 #[derive(Args)]
 struct DeleteBundleArgs {
     bundle: String,
-    /// Confirm deletion of the remote Infisical path and local cache.
+    /// Confirm deletion of the remote GCP Secret Manager secret and local cache.
     #[arg(long)]
     yes: bool,
     /// Permit reading an age identity from macOS Keychain in an SSH session.
@@ -182,7 +184,7 @@ struct GetArgs {
 
 #[derive(Args)]
 struct SyncArgs {
-    /// Bundles to sync. If omitted with --all, every rage bundle in Infisical is synced.
+    /// Bundles to sync. If omitted with --all, every rage bundle in GCP Secret Manager is synced.
     bundles: Vec<String>,
     /// Sync every remote rage bundle.
     #[arg(long)]
@@ -266,11 +268,9 @@ struct SshArgs {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
-    infisical_project_id: String,
-    #[serde(default = "default_infisical_environment")]
-    infisical_environment: String,
-    #[serde(default = "default_infisical_endpoint")]
-    infisical_endpoint: String,
+    gcp_project: String,
+    #[serde(default = "default_gcp_endpoint")]
+    gcp_endpoint: String,
     age_recipient: String,
     age_identity: String,
     #[serde(default)]
@@ -286,13 +286,15 @@ struct Config {
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     #[serde(default)]
+    gcp_project: Option<String>,
+    #[serde(default)]
     infisical_project_id: Option<String>,
     #[serde(default)]
-    gcp_project: Option<String>,
-    #[serde(default = "default_infisical_environment")]
-    infisical_environment: String,
-    #[serde(default = "default_infisical_endpoint")]
-    infisical_endpoint: String,
+    infisical_environment: Option<String>,
+    #[serde(default)]
+    infisical_endpoint: Option<String>,
+    #[serde(default = "default_gcp_endpoint")]
+    gcp_endpoint: String,
     age_recipient: String,
     age_identity: String,
     #[serde(default)]
@@ -451,15 +453,11 @@ fn init(args: InitArgs) -> Result<()> {
     validate_secret_prefix(&args.secret_prefix)?;
     let cache_dir = args.cache_dir.clone().unwrap_or_else(default_cache_dir);
     let age_recipient = resolve_init_recipient(&args)?;
-    let infisical_endpoint = env_infisical_endpoint(&args.infisical_endpoint);
-    let infisical_project_id = match args.infisical_project_id {
-        Some(project_id) if !project_id.trim().is_empty() => project_id,
-        _ => infer_infisical_project_id(&infisical_endpoint)?,
-    };
+    let gcp_endpoint = env_gcp_endpoint(&args.gcp_endpoint);
+    let gcp_project = resolve_gcp_project(args.gcp_project.or(args.infisical_project_id))?;
     let cfg = Config {
-        infisical_project_id,
-        infisical_environment: args.infisical_environment,
-        infisical_endpoint,
+        gcp_project,
+        gcp_endpoint,
         age_recipient,
         age_identity: args.age_identity,
         age_identity_source: args.age_identity_source,
@@ -483,8 +481,8 @@ fn init(args: InitArgs) -> Result<()> {
 fn auth(args: AuthArgs) -> Result<()> {
     match args.command {
         AuthCommand::Status => {
-            if infisical_token(&env_infisical_endpoint(DEFAULT_INFISICAL_ENDPOINT)).is_ok() {
-                println!("auth: infisical-token-env");
+            if gcp_access_token().is_ok() {
+                println!("auth: gcp-access-token-env");
             } else {
                 println!("auth: not-configured");
             }
@@ -589,17 +587,16 @@ impl Config {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("read config at {}", path.display()))?;
         let raw_cfg: RawConfig = toml::from_str(&raw)?;
-        let should_rewrite = raw_cfg.gcp_project.is_some()
+        let should_rewrite = raw_cfg.infisical_project_id.is_some()
+            || raw_cfg.infisical_environment.is_some()
+            || raw_cfg.infisical_endpoint.is_some()
             || raw_cfg
-                .infisical_project_id
+                .gcp_project
                 .as_deref()
-                .is_none_or(|project_id| project_id.trim().is_empty());
+                .is_none_or(|project| project.trim().is_empty());
         let cfg = Config::from_raw(raw_cfg)?;
-        if cfg.infisical_project_id.trim().is_empty() {
-            bail!("infisical_project_id is required in config");
-        }
-        if cfg.infisical_environment.trim().is_empty() {
-            bail!("infisical_environment is required in config");
+        if cfg.gcp_project.trim().is_empty() {
+            bail!("gcp_project is required in config");
         }
         validate_secret_prefix(&cfg.secret_prefix)?;
         validate_identity_config(&cfg)?;
@@ -611,15 +608,10 @@ impl Config {
     }
 
     fn from_raw(raw: RawConfig) -> Result<Self> {
-        let infisical_endpoint = env_infisical_endpoint(&raw.infisical_endpoint);
-        let infisical_project_id = match raw.infisical_project_id {
-            Some(project_id) if !project_id.trim().is_empty() => project_id,
-            _ => infer_infisical_project_id(&infisical_endpoint)?,
-        };
+        let gcp_project = resolve_gcp_project(raw.gcp_project.or(raw.infisical_project_id))?;
         Ok(Self {
-            infisical_project_id,
-            infisical_environment: raw.infisical_environment,
-            infisical_endpoint,
+            gcp_project,
+            gcp_endpoint: env_gcp_endpoint(&raw.gcp_endpoint),
             age_recipient: raw.age_recipient,
             age_identity: raw.age_identity,
             age_identity_source: raw.age_identity_source,
@@ -631,12 +623,8 @@ impl Config {
     }
 }
 
-fn default_infisical_environment() -> String {
-    DEFAULT_INFISICAL_ENVIRONMENT.to_string()
-}
-
-fn default_infisical_endpoint() -> String {
-    DEFAULT_INFISICAL_ENDPOINT.to_string()
+fn default_gcp_endpoint() -> String {
+    DEFAULT_GCP_ENDPOINT.to_string()
 }
 
 fn default_secret_prefix() -> String {
@@ -647,11 +635,30 @@ fn normalize_endpoint(endpoint: &str) -> String {
     endpoint.trim_end_matches('/').to_string()
 }
 
-fn env_infisical_endpoint(default: &str) -> String {
-    std::env::var("RAGE_INFISICAL_ENDPOINT")
-        .or_else(|_| std::env::var("INFISICAL_API_URL"))
+fn env_gcp_endpoint(default: &str) -> String {
+    std::env::var("RAGE_GCP_ENDPOINT")
         .map(|value| normalize_endpoint(&value))
         .unwrap_or_else(|_| normalize_endpoint(default))
+}
+
+fn resolve_gcp_project(explicit: Option<String>) -> Result<String> {
+    explicit
+        .or_else(gcp_project_from_env)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "gcp_project is required; pass --gcp-project or set RAGE_GCP_PROJECT/GOOGLE_CLOUD_PROJECT"
+            )
+        })
+}
+
+fn gcp_project_from_env() -> Option<String> {
+    std::env::var("RAGE_GCP_PROJECT")
+        .or_else(|_| std::env::var("GOOGLE_CLOUD_PROJECT"))
+        .or_else(|_| std::env::var("GOOGLE_PROJECT_ID"))
+        .or_else(|_| std::env::var("GCLOUD_PROJECT"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -716,27 +723,32 @@ pub(crate) fn remote_read_bundle(
     bundle: &str,
     allow_ssh_keychain: bool,
 ) -> Result<Option<BTreeMap<String, String>>> {
-    let client = InfisicalClient::new(cfg, allow_ssh_keychain)?;
-    let secrets = client.list_secrets(&bundle_path(bundle), true, false)?;
-    if secrets.is_empty() && bundle == AGENT_AUTH_BUNDLE {
-        let legacy_agent_auth_exists = client
-            .list_secrets("/", false, false)?
-            .iter()
-            .any(|secret| is_reserved_remote_key(&secret.secret_key));
-        if legacy_agent_auth_exists {
-            return Ok(Some(BTreeMap::new()));
+    let client = GcpSecretManagerClient::new(cfg, allow_ssh_keychain)?;
+    let Some(raw) = client.read_bundle(bundle)? else {
+        if bundle == AGENT_AUTH_BUNDLE {
+            let legacy_agent_auth_exists = client
+                .read_bundle("global")?
+                .unwrap_or_default()
+                .keys()
+                .any(|key| is_reserved_remote_key(key));
+            if legacy_agent_auth_exists {
+                return Ok(Some(BTreeMap::new()));
+            }
         }
-    }
-    if secrets.is_empty() {
         return Ok(None);
-    }
+    };
     let mut env = BTreeMap::new();
-    for secret in secrets {
-        if is_reserved_remote_key(&secret.secret_key) {
+    let mut reserved_exists = false;
+    for (key, value) in raw {
+        if is_reserved_remote_key(&key) {
+            reserved_exists = true;
             continue;
         }
-        validate_env_key(&secret.secret_key)?;
-        env.insert(secret.secret_key, secret.secret_value.unwrap_or_default());
+        validate_env_key(&key)?;
+        env.insert(key, value);
+    }
+    if env.is_empty() && !reserved_exists {
+        return Ok(None);
     }
     Ok(Some(env))
 }
@@ -746,28 +758,25 @@ pub(crate) fn remote_read_bundle_for_display(
     bundle: &str,
     allow_ssh_keychain: bool,
 ) -> Result<Option<BTreeMap<String, String>>> {
-    let client = InfisicalClient::new(cfg, allow_ssh_keychain)?;
-    let secret_path = bundle_path(bundle);
+    let client = GcpSecretManagerClient::new(cfg, allow_ssh_keychain)?;
+    let raw = client.read_bundle(bundle)?.unwrap_or_default();
     let mut env = BTreeMap::new();
 
-    for secret in client.list_secrets(&secret_path, false, false)? {
-        if is_reserved_remote_key(&secret.secret_key) {
+    for (key, value) in raw {
+        if is_reserved_remote_key(&key) {
             if bundle == AGENT_AUTH_BUNDLE {
-                env.insert(secret.secret_key, AGENT_AUTH_DISPLAY_VALUE.to_string());
+                env.insert(key, AGENT_AUTH_DISPLAY_VALUE.to_string());
             }
             continue;
         }
-        validate_env_key(&secret.secret_key)?;
-        let value = client
-            .read_secret(&secret.secret_key, &secret_path)?
-            .unwrap_or_default();
-        env.insert(secret.secret_key, value);
+        validate_env_key(&key)?;
+        env.insert(key, value);
     }
 
     if bundle == AGENT_AUTH_BUNDLE {
-        for secret in client.list_secrets("/", false, false)? {
-            if is_reserved_remote_key(&secret.secret_key) {
-                env.entry(secret.secret_key)
+        for (key, _) in client.read_bundle("global")?.unwrap_or_default() {
+            if is_reserved_remote_key(&key) {
+                env.entry(key)
                     .or_insert_with(|| AGENT_AUTH_DISPLAY_VALUE.to_string());
             }
         }
@@ -785,25 +794,13 @@ pub(crate) fn remote_write_bundle(
     env: &BTreeMap<String, String>,
     allow_ssh_keychain: bool,
 ) -> Result<()> {
-    let client = InfisicalClient::new(cfg, allow_ssh_keychain)?;
-    let secret_path = bundle_path(bundle);
-    let existing: Vec<_> = client
-        .list_secrets(&secret_path, false, false)?
-        .into_iter()
-        .filter(|secret| !is_reserved_remote_key(&secret.secret_key))
-        .collect();
-    for key in existing.iter().map(|secret| &secret.secret_key) {
-        if !env.contains_key(key) {
-            client.delete_secret(key, &secret_path)?;
-        }
-    }
+    let client = GcpSecretManagerClient::new(cfg, allow_ssh_keychain)?;
+    let mut merged = client.read_bundle(bundle)?.unwrap_or_default();
+    merged.retain(|key, _| is_reserved_remote_key(key));
     for (key, value) in env {
-        if existing.iter().any(|secret| secret.secret_key == *key) {
-            client.update_secret(key, value, &secret_path)?;
-        } else {
-            client.create_secret(key, value, &secret_path)?;
-        }
+        merged.insert(key.clone(), value.clone());
     }
+    client.write_bundle(bundle, &merged)?;
     Ok(())
 }
 
@@ -812,62 +809,45 @@ pub(crate) fn remote_delete_bundle(
     bundle: &str,
     allow_ssh_keychain: bool,
 ) -> Result<()> {
-    let client = InfisicalClient::new(cfg, allow_ssh_keychain)?;
-    let secret_path = bundle_path(bundle);
-    let existing: Vec<_> = client
-        .list_secrets(&secret_path, false, false)?
-        .into_iter()
-        .filter(|secret| !is_reserved_remote_key(&secret.secret_key))
-        .collect();
-    for secret in existing {
-        client.delete_secret(&secret.secret_key, &secret_path)?;
+    let client = GcpSecretManagerClient::new(cfg, allow_ssh_keychain)?;
+    let mut reserved = client.read_bundle(bundle)?.unwrap_or_default();
+    reserved.retain(|key, _| is_reserved_remote_key(key));
+    if reserved.is_empty() {
+        client.delete_bundle(bundle)?;
+    } else {
+        client.write_bundle(bundle, &reserved)?;
     }
     Ok(())
 }
 
 pub(crate) fn remote_list_bundles(cfg: &Config, allow_ssh_keychain: bool) -> Result<Vec<String>> {
-    let client = InfisicalClient::new(cfg, allow_ssh_keychain)?;
+    let client = GcpSecretManagerClient::new(cfg, allow_ssh_keychain)?;
     let mut bundles = Vec::new();
-    for secret in client.list_secrets("/", false, true)? {
-        let mut bundle = if secret.secret_path == "/" || secret.secret_path.trim().is_empty() {
-            "global".to_string()
-        } else {
-            secret.secret_path.trim_matches('/').to_string()
-        };
-        if is_reserved_remote_key(&secret.secret_key) {
-            if bundle == "global" {
-                bundle = AGENT_AUTH_BUNDLE.to_string();
-            } else if bundle != AGENT_AUTH_BUNDLE {
-                continue;
-            }
-        }
+    for bundle in client.list_bundles()? {
         if bundle == "authless" || bundle.starts_with("authless/") {
             continue;
         }
-        bundles.push(bundle);
+        let raw = client.read_bundle(&bundle)?.unwrap_or_default();
+        let has_public_keys = raw.keys().any(|key| !is_reserved_remote_key(key));
+        let has_reserved_keys = raw.keys().any(|key| is_reserved_remote_key(key));
+        if has_public_keys || bundle == AGENT_AUTH_BUNDLE {
+            bundles.push(bundle.clone());
+        }
+        if bundle == "global" && has_reserved_keys {
+            bundles.push(AGENT_AUTH_BUNDLE.to_string());
+        }
     }
     bundles.sort();
     bundles.dedup();
     Ok(bundles)
 }
 
-fn bundle_path(bundle: &str) -> String {
-    if bundle == "global" {
-        return "/".to_string();
-    }
-    normalize_secret_path(&format!("/{}", bundle.trim_matches('/')))
-}
-
-fn normalize_secret_path(path: &str) -> String {
+fn bundle_from_secret_path(path: &str) -> String {
     let trimmed = path.trim();
     if trimmed.is_empty() || trimmed == "/" {
-        return "/".to_string();
+        return "global".to_string();
     }
-    format!("/{}", trimmed.trim_matches('/'))
-}
-
-fn bool_str(value: bool) -> &'static str {
-    if value { "true" } else { "false" }
+    trimmed.trim_matches('/').to_string()
 }
 
 fn url_component(value: &str) -> String {
@@ -916,8 +896,11 @@ pub(crate) fn read_remote_secret(
     secret_path: &str,
     key: &str,
 ) -> Result<Option<String>> {
-    let client = InfisicalClient::new(cfg, false)?;
-    client.read_secret(key, secret_path)
+    let client = GcpSecretManagerClient::new(cfg, false)?;
+    let bundle = bundle_from_secret_path(secret_path);
+    Ok(client
+        .read_bundle(&bundle)?
+        .and_then(|bundle| bundle.get(key).cloned()))
 }
 
 pub(crate) fn write_remote_secret(
@@ -926,334 +909,194 @@ pub(crate) fn write_remote_secret(
     key: &str,
     value: &str,
 ) -> Result<()> {
-    let client = InfisicalClient::new(cfg, false)?;
-    match client.read_secret(key, secret_path)? {
-        Some(_) => client.update_secret(key, value, secret_path),
-        None => client.create_secret(key, value, secret_path),
-    }
+    let client = GcpSecretManagerClient::new(cfg, false)?;
+    let bundle = bundle_from_secret_path(secret_path);
+    let mut env = client.read_bundle(&bundle)?.unwrap_or_default();
+    env.insert(key.to_string(), value.to_string());
+    client.write_bundle(&bundle, &env)
 }
 
-struct InfisicalClient {
+struct GcpSecretManagerClient {
     http: Client,
-    project_id: String,
-    environment: String,
+    project: String,
     endpoint: String,
     token: String,
+    secret_prefix: String,
 }
 
-impl InfisicalClient {
+impl GcpSecretManagerClient {
     fn new(cfg: &Config, allow_ssh_keychain: bool) -> Result<Self> {
         let _ = identity_text(cfg, allow_ssh_keychain)?;
         let http = Client::new();
-        let endpoint = env_infisical_endpoint(&cfg.infisical_endpoint);
-        let token = infisical_token(&endpoint)?;
+        let endpoint = env_gcp_endpoint(&cfg.gcp_endpoint);
+        let token = gcp_access_token()?;
         Ok(Self {
             http,
-            project_id: std::env::var("RAGE_INFISICAL_PROJECT_ID")
-                .or_else(|_| std::env::var("INFISICAL_PROJECT_ID"))
-                .unwrap_or_else(|_| cfg.infisical_project_id.clone()),
-            environment: std::env::var("RAGE_INFISICAL_ENVIRONMENT")
-                .or_else(|_| std::env::var("INFISICAL_ENVIRONMENT"))
-                .unwrap_or_else(|_| cfg.infisical_environment.clone()),
+            project: gcp_project_from_env().unwrap_or_else(|| cfg.gcp_project.clone()),
             endpoint,
             token,
+            secret_prefix: cfg.secret_prefix.clone(),
         })
     }
 
-    fn secrets_url(&self) -> String {
-        format!("{}/api/v4/secrets", self.endpoint)
+    fn project_url(&self) -> String {
+        format!(
+            "{}/v1/projects/{}",
+            self.endpoint,
+            url_component(&self.project)
+        )
     }
 
-    fn secret_url(&self, key: &str) -> String {
-        format!("{}/api/v4/secrets/{}", self.endpoint, url_component(key))
+    fn secret_url(&self, secret_id: &str) -> String {
+        format!(
+            "{}/secrets/{}",
+            self.project_url(),
+            url_component(secret_id)
+        )
     }
 
-    fn list_secrets(
-        &self,
-        secret_path: &str,
-        view_secret_value: bool,
-        recursive: bool,
-    ) -> Result<Vec<InfisicalSecret>> {
-        let response = self
-            .http
-            .get(self.secrets_url())
-            .bearer_auth(&self.token)
-            .query(&[
-                ("projectId", self.project_id.as_str()),
-                ("environment", self.environment.as_str()),
-                ("secretPath", normalize_secret_path(secret_path).as_str()),
-                ("viewSecretValue", bool_str(view_secret_value)),
-                ("recursive", bool_str(recursive)),
-                ("includeImports", "false"),
-                ("expandSecretReferences", "false"),
-            ])
-            .send()
-            .with_context(|| format!("list Infisical secrets at {}", secret_path))?;
-        if !response.status().is_success() {
-            return Err(infisical_response_error("list secrets", response));
+    fn bundle_secret_id(&self, bundle: &str) -> String {
+        format!("{}-{}", self.secret_prefix, encode_bundle(bundle))
+    }
+
+    fn list_bundles(&self) -> Result<Vec<String>> {
+        let mut bundles = Vec::new();
+        let mut page_token = String::new();
+        loop {
+            let mut request = self
+                .http
+                .get(format!("{}/secrets", self.project_url()))
+                .bearer_auth(&self.token);
+            if !page_token.is_empty() {
+                request = request.query(&[("pageToken", page_token.as_str())]);
+            }
+            let response = request.send().context("list GCP Secret Manager secrets")?;
+            if !response.status().is_success() {
+                return Err(gcp_response_error("list secrets", response));
+            }
+            let body: GcpListSecretsResponse = response
+                .json()
+                .context("parse GCP Secret Manager list response")?;
+            for secret in body.secrets {
+                if let Some(bundle) = self.bundle_from_secret_name(&secret.name) {
+                    bundles.push(bundle);
+                }
+            }
+            page_token = body.next_page_token.unwrap_or_default();
+            if page_token.is_empty() {
+                break;
+            }
         }
-        let body: InfisicalListResponse = response
-            .json()
-            .context("parse Infisical list secrets response")?;
-        Ok(body.secrets)
+        Ok(bundles)
     }
 
-    fn read_secret(&self, key: &str, secret_path: &str) -> Result<Option<String>> {
+    fn read_bundle(&self, bundle: &str) -> Result<Option<BTreeMap<String, String>>> {
+        let secret_id = self.bundle_secret_id(bundle);
         let response = self
             .http
-            .get(self.secret_url(key))
+            .get(format!(
+                "{}/versions/latest:access",
+                self.secret_url(&secret_id)
+            ))
             .bearer_auth(&self.token)
-            .query(&[
-                ("projectId", self.project_id.as_str()),
-                ("environment", self.environment.as_str()),
-                ("secretPath", normalize_secret_path(secret_path).as_str()),
-                ("type", "shared"),
-                ("viewSecretValue", "true"),
-                ("includeImports", "false"),
-                ("expandSecretReferences", "false"),
-            ])
             .send()
-            .with_context(|| format!("read Infisical secret {key} at {secret_path}"))?;
+            .with_context(|| format!("access GCP Secret Manager secret {secret_id}"))?;
         if response.status().as_u16() == 404 {
             return Ok(None);
         }
         if !response.status().is_success() {
-            return Err(infisical_response_error("read secret", response));
+            return Err(gcp_response_error("access secret", response));
         }
-        let body: InfisicalSecretResponse =
-            response.json().context("parse Infisical secret response")?;
-        Ok(body.secret.secret_value)
+        let body: GcpAccessSecretResponse = response
+            .json()
+            .context("parse GCP Secret Manager access response")?;
+        let data = STANDARD
+            .decode(body.payload.data.as_bytes())
+            .context("decode GCP Secret Manager payload")?;
+        parse_dotenv(&String::from_utf8(data)?).map(Some)
     }
 
-    fn create_secret(&self, key: &str, value: &str, secret_path: &str) -> Result<()> {
-        self.ensure_secret_path(secret_path)?;
+    fn write_bundle(&self, bundle: &str, env: &BTreeMap<String, String>) -> Result<()> {
+        let secret_id = self.bundle_secret_id(bundle);
+        self.ensure_secret(&secret_id)?;
+        let payload = STANDARD.encode(render_dotenv(env).as_bytes());
         let response = self
             .http
-            .post(self.secret_url(key))
+            .post(format!("{}:addVersion", self.secret_url(&secret_id)))
             .bearer_auth(&self.token)
-            .json(&InfisicalWriteRequest {
-                project_id: &self.project_id,
-                environment: &self.environment,
-                secret_value: value,
-                secret_path: &normalize_secret_path(secret_path),
-                skip_multiline_encoding: true,
-                secret_type: "shared",
+            .json(&GcpAddVersionRequest {
+                payload: GcpPayload { data: &payload },
             })
             .send()
-            .with_context(|| format!("create Infisical secret {key} at {secret_path}"))?;
+            .with_context(|| format!("add GCP Secret Manager version for {secret_id}"))?;
         if response.status().is_success() {
             Ok(())
         } else {
-            Err(infisical_response_error("create secret", response))
+            Err(gcp_response_error("add secret version", response))
         }
     }
 
-    fn update_secret(&self, key: &str, value: &str, secret_path: &str) -> Result<()> {
+    fn delete_bundle(&self, bundle: &str) -> Result<()> {
+        let secret_id = self.bundle_secret_id(bundle);
         let response = self
             .http
-            .patch(self.secret_url(key))
+            .delete(self.secret_url(&secret_id))
             .bearer_auth(&self.token)
-            .json(&InfisicalWriteRequest {
-                project_id: &self.project_id,
-                environment: &self.environment,
-                secret_value: value,
-                secret_path: &normalize_secret_path(secret_path),
-                skip_multiline_encoding: true,
-                secret_type: "shared",
-            })
             .send()
-            .with_context(|| format!("update Infisical secret {key} at {secret_path}"))?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(infisical_response_error("update secret", response))
-        }
-    }
-
-    fn delete_secret(&self, key: &str, secret_path: &str) -> Result<()> {
-        let response = self
-            .http
-            .delete(self.secret_url(key))
-            .bearer_auth(&self.token)
-            .json(&InfisicalDeleteRequest {
-                project_id: &self.project_id,
-                environment: &self.environment,
-                secret_path: &normalize_secret_path(secret_path),
-                secret_type: "shared",
-            })
-            .send()
-            .with_context(|| format!("delete Infisical secret {key} at {secret_path}"))?;
+            .with_context(|| format!("delete GCP Secret Manager secret {secret_id}"))?;
         if response.status().is_success() || response.status().as_u16() == 404 {
             Ok(())
         } else {
-            Err(infisical_response_error("delete secret", response))
+            Err(gcp_response_error("delete secret", response))
         }
     }
 
-    fn ensure_secret_path(&self, secret_path: &str) -> Result<()> {
-        let path = normalize_secret_path(secret_path);
-        if path == "/" {
-            return Ok(());
-        }
-        let mut parent = "/".to_string();
-        for part in path.trim_matches('/').split('/') {
-            self.create_folder(part, &parent)?;
-            parent = if parent == "/" {
-                format!("/{part}")
-            } else {
-                format!("{parent}/{part}")
-            };
-        }
-        Ok(())
-    }
-
-    fn create_folder(&self, name: &str, parent_path: &str) -> Result<()> {
+    fn ensure_secret(&self, secret_id: &str) -> Result<()> {
         let response = self
             .http
-            .post(format!("{}/api/v2/folders", self.endpoint))
+            .post(format!("{}/secrets", self.project_url()))
             .bearer_auth(&self.token)
-            .json(&InfisicalCreateFolderRequest {
-                project_id: &self.project_id,
-                environment: &self.environment,
-                name,
-                path: &normalize_secret_path(parent_path),
-                description: None,
+            .query(&[("secretId", secret_id)])
+            .json(&GcpCreateSecretRequest {
+                replication: GcpReplication {
+                    automatic: BTreeMap::new(),
+                },
             })
             .send()
-            .with_context(|| format!("create Infisical folder {name} at {parent_path}"))?;
-        if response.status().is_success()
-            || response.status().as_u16() == 400
-            || response.status().as_u16() == 409
-        {
+            .with_context(|| format!("create GCP Secret Manager secret {secret_id}"))?;
+        if response.status().is_success() || response.status().as_u16() == 409 {
             Ok(())
         } else {
-            Err(infisical_response_error("create folder", response))
+            Err(gcp_response_error("create secret", response))
         }
+    }
+
+    fn bundle_from_secret_name(&self, name: &str) -> Option<String> {
+        let secret_id = name.rsplit_once("/secrets/")?.1;
+        let encoded = secret_id.strip_prefix(&format!("{}-", self.secret_prefix))?;
+        let bytes = URL_SAFE_NO_PAD.decode(encoded.as_bytes()).ok()?;
+        String::from_utf8(bytes).ok()
     }
 }
 
-fn infisical_response_error(action: &str, response: reqwest::blocking::Response) -> anyhow::Error {
+fn gcp_response_error(action: &str, response: reqwest::blocking::Response) -> anyhow::Error {
     let status = response.status();
     let body = response
         .text()
         .unwrap_or_else(|_| "<unreadable body>".to_string());
-    anyhow!("Infisical {action} failed with {status}: {body}")
+    anyhow!("GCP Secret Manager {action} failed with {status}: {body}")
 }
 
-fn infisical_token(endpoint: &str) -> Result<String> {
-    match std::env::var("INFISICAL_TOKEN") {
-        Ok(token) if !token.trim().is_empty() => Ok(token),
-        _ => universal_auth_token(endpoint),
-    }
-}
-
-fn infer_infisical_project_id(endpoint: &str) -> Result<String> {
-    if let Ok(project_id) = std::env::var("RAGE_INFISICAL_PROJECT_ID")
-        .or_else(|_| std::env::var("INFISICAL_PROJECT_ID"))
-        && !project_id.trim().is_empty()
+fn gcp_access_token() -> Result<String> {
+    match std::env::var("GCP_ACCESS_TOKEN")
+        .or_else(|_| std::env::var("GOOGLE_OAUTH_ACCESS_TOKEN"))
+        .or_else(|_| std::env::var("CLOUDSDK_AUTH_ACCESS_TOKEN"))
     {
-        return Ok(project_id);
+        Ok(token) if !token.trim().is_empty() => Ok(token),
+        _ => bail!(
+            "GCP auth is not configured; set GCP_ACCESS_TOKEN or GOOGLE_OAUTH_ACCESS_TOKEN with Secret Manager access"
+        ),
     }
-
-    let token = infisical_token(endpoint)?;
-    let response = Client::new()
-        .get(format!(
-            "{}/api/v2/service-token",
-            normalize_endpoint(endpoint)
-        ))
-        .bearer_auth(&token)
-        .send()
-        .context("read Infisical service token metadata")?;
-    if response.status().is_success() {
-        let body: InfisicalServiceTokenResponse = response
-            .json()
-            .context("parse Infisical service token metadata")?;
-        let token = body.service_token();
-        if let Some(project_id) = token
-            .project_id
-            .or(token.workspace_id)
-            .or(token.workspace)
-            .filter(|value| !value.trim().is_empty())
-        {
-            return Ok(project_id);
-        }
-    }
-
-    infer_infisical_project_id_from_projects(endpoint, &token)
-        .context("Infisical project ID could not be inferred; pass --infisical-project-id or set INFISICAL_PROJECT_ID")
-}
-
-fn infer_infisical_project_id_from_projects(endpoint: &str, token: &str) -> Result<String> {
-    let response = Client::new()
-        .get(format!("{}/api/v1/projects", normalize_endpoint(endpoint)))
-        .bearer_auth(token)
-        .send()
-        .context("list Infisical projects")?;
-    if !response.status().is_success() {
-        return Err(infisical_response_error("list projects", response));
-    }
-    let body: InfisicalProjectsResponse = response
-        .json()
-        .context("parse Infisical projects response")?;
-    let project_slug = std::env::var("INFISICAL_PROJECT_SLUG")
-        .or_else(|_| std::env::var("RAGE_INFISICAL_PROJECT_SLUG"))
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    if let Some(slug) = project_slug {
-        return body
-            .projects
-            .into_iter()
-            .find(|project| project.slug.as_deref() == Some(slug.as_str()))
-            .map(|project| project.id)
-            .with_context(|| format!("Infisical project slug '{slug}' was not found"));
-    }
-    if body.projects.len() == 1 {
-        return Ok(body.projects.into_iter().next().unwrap().id);
-    }
-    bail!("multiple Infisical projects are visible")
-}
-
-fn universal_auth_token(endpoint: &str) -> Result<String> {
-    let client_id = std::env::var("INFISICAL_MACHINE_IDENTITY_CLIENT_ID")
-        .or_else(|_| std::env::var("INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"))
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let client_secret = std::env::var("INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET")
-        .or_else(|_| std::env::var("INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"))
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let (Some(client_id), Some(client_secret)) = (client_id, client_secret) else {
-        bail!(
-            "Infisical auth is not configured; set INFISICAL_TOKEN or INFISICAL_MACHINE_IDENTITY_CLIENT_ID and INFISICAL_MACHINE_IDENTITY_CLIENT_SECRET"
-        );
-    };
-
-    let organization_slug = std::env::var("INFISICAL_ORGANIZATION_SLUG")
-        .or_else(|_| std::env::var("INFISICAL_ORG_SLUG"))
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let response = Client::new()
-        .post(format!(
-            "{}/api/v1/auth/universal-auth/login",
-            normalize_endpoint(endpoint)
-        ))
-        .json(&InfisicalUniversalAuthRequest {
-            client_id: &client_id,
-            client_secret: &client_secret,
-            organization_slug: organization_slug.as_deref(),
-        })
-        .send()
-        .context("login to Infisical with Universal Auth")?;
-    if !response.status().is_success() {
-        return Err(infisical_response_error("Universal Auth login", response));
-    }
-    let body: InfisicalUniversalAuthResponse = response
-        .json()
-        .context("parse Infisical Universal Auth response")?;
-    if body.token_type != "Bearer" || body.access_token.trim().is_empty() {
-        bail!("Infisical Universal Auth response did not include a bearer access token");
-    }
-    Ok(body.access_token)
 }
 
 fn identity_text(cfg: &Config, allow_ssh_keychain: bool) -> Result<String> {
@@ -1265,110 +1108,48 @@ fn identity_text(cfg: &Config, allow_ssh_keychain: bool) -> Result<String> {
 }
 
 #[derive(Deserialize)]
-struct InfisicalListResponse {
+#[serde(rename_all = "camelCase")]
+struct GcpListSecretsResponse {
     #[serde(default)]
-    secrets: Vec<InfisicalSecret>,
+    secrets: Vec<GcpSecret>,
+    #[serde(default)]
+    next_page_token: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct InfisicalSecretResponse {
-    secret: InfisicalSecret,
+struct GcpSecret {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct GcpAccessSecretResponse {
+    payload: GcpOwnedPayload,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct InfisicalSecret {
-    secret_key: String,
-    #[serde(default)]
-    secret_value: Option<String>,
-    #[serde(default)]
-    secret_path: String,
+struct GcpOwnedPayload {
+    data: String,
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InfisicalWriteRequest<'a> {
-    project_id: &'a str,
-    environment: &'a str,
-    secret_value: &'a str,
-    secret_path: &'a str,
-    skip_multiline_encoding: bool,
-    #[serde(rename = "type")]
-    secret_type: &'a str,
+struct GcpCreateSecretRequest {
+    replication: GcpReplication,
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InfisicalDeleteRequest<'a> {
-    project_id: &'a str,
-    environment: &'a str,
-    secret_path: &'a str,
-    #[serde(rename = "type")]
-    secret_type: &'a str,
+struct GcpReplication {
+    automatic: BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InfisicalCreateFolderRequest<'a> {
-    project_id: &'a str,
-    environment: &'a str,
-    name: &'a str,
-    path: &'a str,
-    description: Option<&'a str>,
+struct GcpAddVersionRequest<'a> {
+    payload: GcpPayload<'a>,
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InfisicalUniversalAuthRequest<'a> {
-    client_id: &'a str,
-    client_secret: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    organization_slug: Option<&'a str>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct InfisicalUniversalAuthResponse {
-    access_token: String,
-    token_type: String,
-}
-
-#[derive(Deserialize)]
-struct InfisicalProjectsResponse {
-    projects: Vec<InfisicalProject>,
-}
-
-#[derive(Deserialize)]
-struct InfisicalProject {
-    id: String,
-    #[serde(default)]
-    slug: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct InfisicalServiceTokenResponse {
-    #[serde(default)]
-    service_token: Option<InfisicalServiceToken>,
-    #[serde(flatten)]
-    token: InfisicalServiceToken,
-}
-
-impl InfisicalServiceTokenResponse {
-    fn service_token(self) -> InfisicalServiceToken {
-        self.service_token.unwrap_or(self.token)
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct InfisicalServiceToken {
-    #[serde(default)]
-    project_id: Option<String>,
-    #[serde(default)]
-    workspace_id: Option<String>,
-    #[serde(default)]
-    workspace: Option<String>,
+struct GcpPayload<'a> {
+    data: &'a str,
 }
 
 fn write_cache(cfg: &Config, bundle: &str, env: &BTreeMap<String, String>) -> Result<()> {
